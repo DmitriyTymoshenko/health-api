@@ -98,6 +98,42 @@ function extractValue(line) {
   return null
 }
 
+function extractDateFromPdf(text) {
+  // Try common date formats from Ukrainian/Russian lab reports
+  const patterns = [
+    // Сінево: "Дата: 25.03.2026" або "Дата взяття: 25.03.2026"
+    /(?:дата(?:\s+(?:взяття|прийому|аналізу|реєстрації|видачі))?)\s*[:\s]\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})/i,
+    // "від 25.03.2026"
+    /від\s+(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})/i,
+    // ISO або загальний формат на початку рядка
+    /\b(\d{4}[./-]\d{2}[./-]\d{2})\b/,
+    // DD.MM.YYYY
+    /\b(\d{1,2}\.\d{1,2}\.\d{4})\b/,
+  ]
+
+  for (const pattern of patterns) {
+    const m = text.match(pattern)
+    if (m) {
+      const raw = m[1]
+      // Normalize to YYYY-MM-DD
+      let d
+      if (/^\d{4}/.test(raw)) {
+        // Already YYYY-... format
+        d = raw.replace(/[./]/g, '-').slice(0, 10)
+      } else {
+        const parts = raw.split(/[./-]/)
+        if (parts.length === 3) {
+          let [day, month, year] = parts
+          if (year.length === 2) year = '20' + year
+          d = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`
+        }
+      }
+      if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) return d
+    }
+  }
+  return null
+}
+
 function parsePdfText(text) {
   const results = {}
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
@@ -236,11 +272,13 @@ module.exports = function (getDB) {
       fs.unlinkSync(req.file.path)
       
       const extracted = parsePdfText(data.text)
-      const date = req.body.date || new Date().toISOString().split('T')[0]
+      const pdfDate = extractDateFromPdf(data.text)
+      const date = req.body.date || pdfDate || new Date().toISOString().split('T')[0]
       
       if (Object.keys(extracted).length === 0) {
         return res.json({
           parsed: false,
+          detected_date: pdfDate,
           message: 'Не вдалось автоматично розпізнати показники. Введіть вручну.',
           raw_text: data.text.slice(0, 2000),
           values: {}
@@ -261,6 +299,8 @@ module.exports = function (getDB) {
       res.json({
         parsed: true,
         found: Object.keys(extracted).length,
+        detected_date: pdfDate,
+        date_source: pdfDate ? 'pdf' : (req.body.date ? 'manual' : 'today'),
         entry: { ...doc, _id: result.insertedId }
       })
     } catch (err) {
