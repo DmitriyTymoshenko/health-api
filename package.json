@@ -8,7 +8,8 @@
     "dev": "nodemon server.js",
     "build": "tsc",
     "test": "jest",
-    "test:watch": "jest --watch"
+    "test:watch": "jest --watch",
+    "deploy": "npm test && health-deploy.sh"
   },
   "dependencies": {
     "cors": "^2.8.5",
