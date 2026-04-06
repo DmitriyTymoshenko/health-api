@@ -1,4 +1,5 @@
 const { Router } = require('express')
+const { checkWaterAndNotify, calcWaterGoal } = require('../notify')
 
 module.exports = function (getDB) {
   const router = Router()
@@ -20,7 +21,7 @@ module.exports = function (getDB) {
     }
   })
 
-  // GET /api/water/today
+  // GET /api/water/today — includes dynamic goal from WHOOP
   router.get('/today', async (req, res) => {
     try {
       const db = getDB()
@@ -31,13 +32,24 @@ module.exports = function (getDB) {
         .toArray()
 
       const total_ml = data.reduce((sum, e) => sum + (e.amount_ml || 0), 0)
-      res.json({ date: today, total_ml, entries: data })
+
+      // Fetch WHOOP data for dynamic goal
+      const [cycle, weightLog] = await Promise.all([
+        db.collection('whoop_cycles').findOne({ date: today }),
+        db.collection('weight_log').find().sort({ date: -1 }).limit(1).toArray()
+      ])
+      const weight = weightLog[0]?.weight_kg || null
+      const strain = cycle?.strain || 0
+      const goal_ml = calcWaterGoal(weight, strain)
+      const pct = goal_ml > 0 ? Math.round((total_ml / goal_ml) * 100) : 0
+
+      res.json({ date: today, total_ml, goal_ml, pct, strain, entries: data })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
   })
 
-  // POST /api/water
+  // POST /api/water — log water + trigger notification check
   router.post('/', async (req, res) => {
     try {
       const db = getDB()
@@ -48,6 +60,9 @@ module.exports = function (getDB) {
 
       const result = await db.collection('water_log').insertOne(doc)
       res.status(201).json({ ...doc, _id: result.insertedId })
+
+      // Fire-and-forget water notification check
+      checkWaterAndNotify(db, doc.date).catch(() => {})
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
