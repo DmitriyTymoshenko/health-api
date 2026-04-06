@@ -1,5 +1,9 @@
 const { Router } = require('express')
 
+function kyivToday() {
+  return new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Kiev' })
+}
+
 module.exports = function (getDB) {
   const router = Router()
 
