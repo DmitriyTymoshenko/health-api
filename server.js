@@ -4,6 +4,8 @@ const { MongoClient } = require('mongodb')
 const fs = require('fs')
 const path = require('path')
 
+const pkg = require('./package.json')
+
 const app = express()
 const PORT = 3001
 const MONGO_URL = 'mongodb://localhost:27017'
@@ -282,6 +284,13 @@ app.use('/api/activity-plan', require('./routes/activity_plan')(getDB))
 
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }))
+
+// Version info (SPEC-001, REQ-1, REQ-2)
+app.get('/api/version', (req, res) => res.json({
+  version: pkg.version,
+  name: pkg.name,
+  uptime: Math.floor(process.uptime())
+}))
 
 // Start
 connectDB()
