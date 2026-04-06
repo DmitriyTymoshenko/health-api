@@ -41,6 +41,11 @@ module.exports = function (getDB) {
   router.get('/analysis', async (req, res) => {
     try {
       const db = getDB()
+      const today = kyivToday()
+
+      // Try to get today's weight first
+      const todayEntry = await db.collection('weight_log').findOne({ date: today })
+
       const entries = await db.collection('weight_log')
         .find({})
         .sort({ date: -1 })
@@ -49,7 +54,9 @@ module.exports = function (getDB) {
 
       if (entries.length < 2) return res.json({ status: 'insufficient_data', message: 'Недостатньо даних' })
 
-      const latest = entries[0]
+      // Use today's weight if available, otherwise fall back to latest entry
+      const latest = todayEntry || entries[0]
+      const today_logged = !!todayEntry
       const oldest7 = entries.find(e => {
         const diff = (new Date(latest.date) - new Date(e.date)) / 86400000
         return diff >= 6
@@ -100,9 +107,12 @@ module.exports = function (getDB) {
         actual_per_week: actualPerWeek,
         planned_per_week: plannedPerWeek,
         latest_weight: latest.weight_kg,
+        latest_date: latest.date,
         oldest_weight: oldest7.weight_kg,
         days_analyzed: daysDiff,
         plateau,
+        today_logged,
+        ...(!today_logged && { warning: 'Сьогоднішню вагу ще не записано — використано останній запис' }),
       })
     } catch (err) {
       res.status(500).json({ error: err.message })
