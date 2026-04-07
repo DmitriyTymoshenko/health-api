@@ -154,6 +154,53 @@ export interface UserSettings {
   weight_milestones?: Array<{ date: string; target: number; label: string }>
 }
 
+export interface PRRecord {
+  value: number
+  date: string | null
+  weight?: number | null
+  reps?: number | null
+}
+
+export interface PersonalRecord {
+  exercise: string
+  muscle_group: string | null
+  max_weight: PRRecord
+  max_volume: PRRecord
+  max_1rm: PRRecord
+  max_reps: PRRecord
+  total_sessions: number
+  history?: Array<{
+    date: string
+    est_1rm: number
+    max_weight: number
+    volume: number
+  }>
+}
+
+export interface NewPRDetection {
+  exercise: string
+  records: Array<{
+    type: 'max_weight' | 'max_volume' | 'max_1rm' | 'max_reps'
+    value: number
+    previous: number
+    weight?: number
+    reps?: number
+  }>
+}
+
+export interface PRSummary {
+  total_exercises_tracked: number
+  total_workout_sessions: number
+  top_5_by_1rm: PersonalRecord[]
+  recent_prs: Array<{
+    exercise: string
+    muscle_group: string | null
+    total_sessions: number
+    recent_prs: Partial<Record<string, PRRecord>>
+  }>
+  period_days: number
+}
+
 export interface ApiError {
   error: string
   details?: unknown
