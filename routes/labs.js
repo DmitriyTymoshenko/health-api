@@ -204,6 +204,25 @@ function getStatus(key, value) {
   return 'normal'
 }
 
+// Recommended retest intervals (days) per biomarker group
+const RETEST_INTERVALS = {
+  // Вітаміни/Мінерали — кожні 90 днів
+  vitamin_d: 90, vitamin_b12: 180, ferritin: 90, iron: 90,
+  magnesium_serum: 90, zinc_serum: 90,
+  // Гормони — кожні 180 днів
+  testosterone: 180, cortisol_morning: 180, tsh: 365, free_t4: 365, insulin: 180,
+  // Метаболізм — кожні 90 днів
+  glucose: 90, hba1c: 90,
+  // Ліпіди — кожні 180 днів
+  cholesterol_total: 180, ldl: 180, hdl: 180, triglycerides: 180,
+  // Запалення — кожні 90 днів
+  crp: 90, homocysteine: 180,
+  // Загальний аналіз крові — кожні 90 днів
+  hemoglobin: 90, hematocrit: 90,
+  // Печінка/Нирки — кожні 180 днів
+  alt: 180, ast: 180, creatinine: 180,
+}
+
 module.exports = function (getDB) {
   const router = Router()
 
@@ -238,6 +257,80 @@ module.exports = function (getDB) {
         }
       }
       res.json(latest)
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // GET /api/labs/reminders — biomarkers due for retesting
+  // Returns: { overdue: [...], soon: [...], upcoming: [...], never: [...] }
+  router.get('/reminders', async (req, res) => {
+    try {
+      const db = getDB()
+      const all = await db.collection('lab_results').find({}).sort({ date: -1 }).toArray()
+
+      // Build latest per biomarker
+      const latest = {}
+      for (const entry of all) {
+        for (const [key, val] of Object.entries(entry.values || {})) {
+          if (!latest[key]) {
+            latest[key] = { value: val, date: entry.date }
+          }
+        }
+      }
+
+      const today = new Date()
+      const overdue = []  // daysLeft <= 0
+      const soon = []     // daysLeft 1-30
+      const upcoming = [] // daysLeft > 30
+      const never = []    // no data at all
+
+      for (const [key, intervalDays] of Object.entries(RETEST_INTERVALS)) {
+        const ref = REFERENCE_RANGES[key]
+        const name = ref?.name || key
+
+        if (!latest[key]) {
+          never.push({ key, name, intervalDays })
+          continue
+        }
+
+        const lastDate = new Date(latest[key].date)
+        const nextDate = new Date(lastDate)
+        nextDate.setDate(nextDate.getDate() + intervalDays)
+        const daysLeft = Math.ceil((nextDate - today) / 86400000)
+
+        const item = {
+          key, name, intervalDays,
+          lastDate: latest[key].date,
+          lastValue: latest[key].value,
+          nextDate: nextDate.toISOString().split('T')[0],
+          daysLeft,
+          status: getStatus(key, latest[key].value),
+        }
+
+        if (daysLeft <= 0) overdue.push(item)
+        else if (daysLeft <= 30) soon.push(item)
+        else upcoming.push(item)
+      }
+
+      // Sort: overdue by most overdue first, soon/upcoming by soonest first
+      overdue.sort((a, b) => a.daysLeft - b.daysLeft)
+      soon.sort((a, b) => a.daysLeft - b.daysLeft)
+      upcoming.sort((a, b) => a.daysLeft - b.daysLeft)
+
+      res.json({
+        overdue,
+        soon,
+        upcoming,
+        never,
+        summary: {
+          total: Object.keys(RETEST_INTERVALS).length,
+          overdueCount: overdue.length,
+          soonCount: soon.length,
+          upcomingCount: upcoming.length,
+          neverCount: never.length,
+        },
+      })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
