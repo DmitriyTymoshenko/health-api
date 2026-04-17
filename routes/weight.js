@@ -86,12 +86,12 @@ module.exports = function (getDB) {
         message = '📊 Плато — вага не змінюється 5+ днів'
         recommendation = 'Спробуй збільшити дефіцит на 100 ккал або додати кардіо'
         color = '#FF8C42'
-      } else if (actualPerWeek < plannedPerWeek * 0.3) {
+      } else if (actualPerWeek > plannedPerWeek * 0.3) {
         status = 'behind'
         message = `⚠️ Відстаєш від плану (фактично ${actualPerWeek} кг/тижд)`
         recommendation = `План: ${plannedPerWeek} кг/тижд. Перевір точність обліку їжі або збільш дефіцит`
         color = '#FF6B6B'
-      } else if (actualPerWeek < plannedPerWeek * 1.3) {
+      } else if (actualPerWeek > plannedPerWeek * 1.3) {
         status = 'on_track'
         message = `✅ Ідеш по плану (${actualPerWeek} кг/тижд)`
         recommendation = 'Продовжуй в тому ж темпі'
