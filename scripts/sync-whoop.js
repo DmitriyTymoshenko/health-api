@@ -8,7 +8,7 @@ const fs = require('fs')
 const { MongoClient } = require('mongodb')
 
 const CREDS_PATH = '/root/.openclaw/workspace/integrations/whoop.json'
-const MONGO_URL = 'mongodb://localhost:27017'
+const MONGO_URL = process.env.MONGO_URL || 'mongodb://localhost:27017'
 const DB_NAME = 'health_tracker'
 const WHOOP_TOKEN_URL = 'https://api.prod.whoop.com/oauth/oauth2/token'
 const WHOOP_API = 'https://api.prod.whoop.com/developer/v1'
@@ -177,9 +177,16 @@ async function syncDate(db, token, dateStr) {
         skin_temp_celsius: r.score?.skin_temp_celsius ?? null,
         synced_at: now,
       }
+      // Only overwrite score fields if we have actual score data.
+      // Prevents a PENDING_SLEEP sync from nulling out previously valid recovery scores.
+      const RECOVERY_SCORE_FIELDS = ['recovery_score', 'resting_heart_rate', 'hrv_rmssd', 'spo2_percentage', 'skin_temp_celsius']
+      const hasRecoveryScores = RECOVERY_SCORE_FIELDS.some(f => doc[f] !== null)
+      const recoverySetDoc = hasRecoveryScores
+        ? { ...doc }
+        : Object.fromEntries(Object.entries(doc).filter(([k]) => !RECOVERY_SCORE_FIELDS.includes(k)))
       await db.collection('whoop_recovery').updateOne(
         { date: dateStr },
-        { $set: doc },
+        { $set: recoverySetDoc },
         { upsert: true }
       )
       recoveryResult = doc
@@ -233,9 +240,18 @@ async function syncDate(db, token, dateStr) {
         sleep_efficiency: s.score?.sleep_efficiency_percentage ?? null,
         synced_at: now,
       }
+      // Only overwrite score fields if we have actual score data.
+      // Prevents an incomplete sleep sync from nulling out valid stage/score data.
+      const SLEEP_SCORE_FIELDS = ['sleep_hours', 'sleep_needed_hours', 'sleep_needed_ms', 'total_sleep_ms',
+        'total_in_bed_ms', 'total_awake_ms', 'total_light_sleep_ms', 'total_sws_ms', 'total_rem_ms',
+        'disturbance_count', 'respiratory_rate', 'sleep_performance', 'sleep_consistency', 'sleep_efficiency']
+      const hasSleepScores = SLEEP_SCORE_FIELDS.some(f => doc[f] !== null)
+      const sleepSetDoc = hasSleepScores
+        ? { ...doc }
+        : Object.fromEntries(Object.entries(doc).filter(([k]) => !SLEEP_SCORE_FIELDS.includes(k)))
       await db.collection('whoop_sleep').updateOne(
         { sleep_id: String(s.id) },
-        { $set: doc },
+        { $set: sleepSetDoc },
         { upsert: true }
       )
       sleepResult = doc
@@ -291,6 +307,39 @@ async function syncDate(db, token, dateStr) {
     }
   } catch (e) {
     log(`  [workouts] ${dateStr} error: ${e.message}`)
+  }
+
+  // ── Upsert daily_metrics (denormalized view for /api/metrics) ──
+  try {
+    const metricsDoc = { date: dateStr, synced_at: now }
+    if (cycleResult) {
+      if (cycleResult.strain !== null) metricsDoc.strain = cycleResult.strain
+      if (cycleResult.calories_burned !== null) metricsDoc.calories_burned = cycleResult.calories_burned
+      if (cycleResult.avg_heart_rate !== null) metricsDoc.avg_heart_rate = cycleResult.avg_heart_rate
+      if (cycleResult.max_heart_rate !== null) metricsDoc.max_heart_rate = cycleResult.max_heart_rate
+    }
+    if (recoveryResult) {
+      if (recoveryResult.recovery_score !== null) metricsDoc.recovery_score = recoveryResult.recovery_score
+      if (recoveryResult.hrv_rmssd !== null) metricsDoc.hrv_rmssd = recoveryResult.hrv_rmssd
+      if (recoveryResult.resting_heart_rate !== null) metricsDoc.resting_heart_rate = recoveryResult.resting_heart_rate
+      if (recoveryResult.spo2_percentage !== null) metricsDoc.spo2_percentage = recoveryResult.spo2_percentage
+      if (recoveryResult.skin_temp_celsius !== null) metricsDoc.skin_temp_celsius = recoveryResult.skin_temp_celsius
+    }
+    if (sleepResult) {
+      if (sleepResult.sleep_hours !== null) metricsDoc.sleep_hours = sleepResult.sleep_hours
+      if (sleepResult.sleep_performance !== null) metricsDoc.sleep_performance = sleepResult.sleep_performance
+      if (sleepResult.sleep_needed_hours !== null) metricsDoc.sleep_needed_hours = sleepResult.sleep_needed_hours
+      if (sleepResult.sleep_consistency !== null) metricsDoc.sleep_consistency = sleepResult.sleep_consistency
+      if (sleepResult.sleep_efficiency !== null) metricsDoc.sleep_efficiency = sleepResult.sleep_efficiency
+      if (sleepResult.respiratory_rate !== null) metricsDoc.respiratory_rate = sleepResult.respiratory_rate
+    }
+    await db.collection('daily_metrics').updateOne(
+      { date: dateStr },
+      { $set: metricsDoc },
+      { upsert: true }
+    )
+  } catch (e) {
+    log(`  [daily_metrics] ${dateStr} error: ${e.message}`)
   }
 
   log(
