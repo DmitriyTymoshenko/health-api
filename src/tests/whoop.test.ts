@@ -299,6 +299,42 @@ describe('splitWeek — week data splitting', () => {
   })
 })
 
+describe('whoop/summary — null fallback logic', () => {
+  // Replicate the fallback selection logic from routes/whoop.js GET /summary
+  function getEffectiveRecord(
+    today: { [key: string]: unknown } | null,
+    scoreField: string,
+    fallback: { [key: string]: unknown } | null
+  ): { data: { [key: string]: unknown } | null; isFallback: boolean } {
+    if (today && today[scoreField] !== null && today[scoreField] !== undefined) {
+      return { data: today, isFallback: false }
+    }
+    return { data: fallback, isFallback: fallback !== null }
+  }
+
+  it('uses today data when recovery_score is present', () => {
+    const today = { date: '2026-05-01', recovery_score: 78, hrv_rmssd: 62 }
+    const fallback = { date: '2026-04-30', recovery_score: 70, hrv_rmssd: 55 }
+    const result = getEffectiveRecord(today, 'recovery_score', fallback)
+    expect(result.data!.recovery_score).toBe(78)
+    expect(result.isFallback).toBe(false)
+  })
+
+  it('uses fallback record when today recovery_score is null (PENDING_SLEEP)', () => {
+    const today = { date: '2026-05-01', recovery_score: null }
+    const fallback = { date: '2026-04-30', recovery_score: 78, hrv_rmssd: 62 }
+    const result = getEffectiveRecord(today, 'recovery_score', fallback)
+    expect(result.data!.recovery_score).toBe(78)
+    expect(result.isFallback).toBe(true)
+  })
+
+  it('returns null when both today and fallback are unavailable', () => {
+    const result = getEffectiveRecord(null, 'recovery_score', null)
+    expect(result.data).toBeNull()
+    expect(result.isFallback).toBe(false)
+  })
+})
+
 describe('toDateStr — date formatting', () => {
   it('formats date as YYYY-MM-DD', () => {
     const d = new Date('2026-04-17T00:00:00')
