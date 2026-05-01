@@ -335,6 +335,98 @@ describe('whoop/summary — null fallback logic', () => {
   })
 })
 
+describe('sync-whoop — null protection: hasRecoveryScores', () => {
+  const RECOVERY_SCORE_FIELDS = ['recovery_score', 'resting_heart_rate', 'hrv_rmssd', 'spo2_percentage', 'skin_temp_celsius']
+
+  function hasRecoveryScores(doc: Record<string, unknown>): boolean {
+    return RECOVERY_SCORE_FIELDS.some(f => doc[f] !== null)
+  }
+
+  function buildRecoverySetDoc(doc: Record<string, unknown>): Record<string, unknown> {
+    const has = hasRecoveryScores(doc)
+    return has
+      ? { ...doc }
+      : Object.fromEntries(Object.entries(doc).filter(([k]) => !RECOVERY_SCORE_FIELDS.includes(k)))
+  }
+
+  it('detects valid recovery scores — all fields present', () => {
+    const doc = { date: '2026-05-01', recovery_score: 78, hrv_rmssd: 62, resting_heart_rate: 52, spo2_percentage: 98, skin_temp_celsius: 36.5 }
+    expect(hasRecoveryScores(doc)).toBe(true)
+  })
+
+  it('detects at least one non-null score as valid', () => {
+    const doc = { date: '2026-05-01', recovery_score: 78, hrv_rmssd: null, resting_heart_rate: null, spo2_percentage: null, skin_temp_celsius: null }
+    expect(hasRecoveryScores(doc)).toBe(true)
+  })
+
+  it('returns false when all score fields are null (PENDING_SLEEP)', () => {
+    const doc = { date: '2026-05-01', recovery_score: null, hrv_rmssd: null, resting_heart_rate: null, spo2_percentage: null, skin_temp_celsius: null }
+    expect(hasRecoveryScores(doc)).toBe(false)
+  })
+
+  it('full doc written when scores present', () => {
+    const doc = { date: '2026-05-01', cycle_id: '123', score_state: 'SCORED', recovery_score: 78, hrv_rmssd: 62, resting_heart_rate: 52, spo2_percentage: 98, skin_temp_celsius: 36.5, synced_at: 'now' }
+    const result = buildRecoverySetDoc(doc)
+    expect(result).toEqual(doc)
+  })
+
+  it('score fields excluded from update when all null (prevents overwriting valid DB data)', () => {
+    const doc = { date: '2026-05-01', cycle_id: '123', score_state: 'PENDING_SLEEP', recovery_score: null, hrv_rmssd: null, resting_heart_rate: null, spo2_percentage: null, skin_temp_celsius: null, synced_at: 'now' }
+    const result = buildRecoverySetDoc(doc)
+    expect(result).not.toHaveProperty('recovery_score')
+    expect(result).not.toHaveProperty('hrv_rmssd')
+    expect(result).not.toHaveProperty('resting_heart_rate')
+    expect(result).toHaveProperty('date', '2026-05-01')
+    expect(result).toHaveProperty('score_state', 'PENDING_SLEEP')
+    expect(result).toHaveProperty('synced_at')
+  })
+})
+
+describe('sync-whoop — null protection: hasSleepScores', () => {
+  const SLEEP_SCORE_FIELDS = ['sleep_hours', 'sleep_needed_hours', 'sleep_needed_ms', 'total_sleep_ms',
+    'total_in_bed_ms', 'total_awake_ms', 'total_light_sleep_ms', 'total_sws_ms', 'total_rem_ms',
+    'disturbance_count', 'respiratory_rate', 'sleep_performance', 'sleep_consistency', 'sleep_efficiency']
+
+  function hasSleepScores(doc: Record<string, unknown>): boolean {
+    return SLEEP_SCORE_FIELDS.some(f => doc[f] !== null)
+  }
+
+  function buildSleepSetDoc(doc: Record<string, unknown>): Record<string, unknown> {
+    const has = hasSleepScores(doc)
+    return has
+      ? { ...doc }
+      : Object.fromEntries(Object.entries(doc).filter(([k]) => !SLEEP_SCORE_FIELDS.includes(k)))
+  }
+
+  it('detects valid sleep data when sleep_hours present', () => {
+    const doc = { date: '2026-05-01', sleep_hours: 8.5, sleep_performance: 90, sleep_needed_hours: 8.0, total_sleep_ms: 30600000, total_in_bed_ms: null, total_awake_ms: null, total_light_sleep_ms: null, total_sws_ms: null, total_rem_ms: null, disturbance_count: null, respiratory_rate: null, sleep_consistency: null, sleep_efficiency: null, sleep_needed_ms: null }
+    expect(hasSleepScores(doc)).toBe(true)
+  })
+
+  it('returns false when all sleep score fields null', () => {
+    const doc = { date: '2026-05-01', sleep_hours: null, sleep_needed_hours: null, sleep_needed_ms: null, total_sleep_ms: null, total_in_bed_ms: null, total_awake_ms: null, total_light_sleep_ms: null, total_sws_ms: null, total_rem_ms: null, disturbance_count: null, respiratory_rate: null, sleep_performance: null, sleep_consistency: null, sleep_efficiency: null }
+    expect(hasSleepScores(doc)).toBe(false)
+  })
+
+  it('sleep score fields excluded when all null (prevents overwriting valid DB sleep data)', () => {
+    const doc = { date: '2026-05-01', sleep_id: 'abc', score_state: 'PENDING_SLEEP', sleep_hours: null, sleep_performance: null, sleep_needed_hours: null, sleep_needed_ms: null, total_sleep_ms: null, total_in_bed_ms: null, total_awake_ms: null, total_light_sleep_ms: null, total_sws_ms: null, total_rem_ms: null, disturbance_count: null, respiratory_rate: null, sleep_consistency: null, sleep_efficiency: null, synced_at: 'now' }
+    const result = buildSleepSetDoc(doc)
+    expect(result).not.toHaveProperty('sleep_hours')
+    expect(result).not.toHaveProperty('sleep_performance')
+    expect(result).not.toHaveProperty('total_sleep_ms')
+    expect(result).toHaveProperty('date', '2026-05-01')
+    expect(result).toHaveProperty('sleep_id', 'abc')
+    expect(result).toHaveProperty('score_state', 'PENDING_SLEEP')
+  })
+
+  it('full doc written when sleep scores present', () => {
+    const doc = { date: '2026-05-01', sleep_id: 'abc', sleep_hours: 8.5, sleep_performance: 90, sleep_needed_hours: null, sleep_needed_ms: null, total_sleep_ms: 30600000, total_in_bed_ms: null, total_awake_ms: null, total_light_sleep_ms: null, total_sws_ms: null, total_rem_ms: null, disturbance_count: null, respiratory_rate: null, sleep_consistency: null, sleep_efficiency: null, synced_at: 'now' }
+    const result = buildSleepSetDoc(doc)
+    expect(result).toEqual(doc)
+    expect(result).toHaveProperty('sleep_hours', 8.5)
+  })
+})
+
 describe('toDateStr — date formatting', () => {
   it('formats date as YYYY-MM-DD', () => {
     const d = new Date('2026-04-17T00:00:00')
