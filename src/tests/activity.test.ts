@@ -96,6 +96,35 @@ describe('normalizeActivityDoc — POST body normalization', () => {
   })
 })
 
+describe('activity/today — today filter logic', () => {
+  function buildTodayFilter(): { date: string } {
+    const today = new Date().toISOString().split('T')[0]
+    return { date: today }
+  }
+
+  it('returns filter object with date key', () => {
+    const filter = buildTodayFilter()
+    expect(filter).toHaveProperty('date')
+  })
+
+  it('today date matches current YYYY-MM-DD format', () => {
+    const filter = buildTodayFilter()
+    expect(filter.date).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+  })
+
+  it('today date equals new Date().toISOString().split(T)[0]', () => {
+    const filter = buildTodayFilter()
+    const expected = new Date().toISOString().split('T')[0]
+    expect(filter.date).toBe(expected)
+  })
+
+  it('filter has exactly one key (date)', () => {
+    const filter = buildTodayFilter()
+    expect(Object.keys(filter)).toHaveLength(1)
+    expect(Object.keys(filter)[0]).toBe('date')
+  })
+})
+
 describe('activity — pagination defaults', () => {
   function parseLimit(limitStr: string | undefined, defaultLimit: number): number {
     return limitStr !== undefined ? Number(limitStr) : defaultLimit

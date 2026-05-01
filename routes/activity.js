@@ -20,6 +20,21 @@ module.exports = function (getDB) {
     }
   })
 
+  // GET /api/activity/today
+  router.get('/today', async (req, res) => {
+    try {
+      const db = getDB()
+      const today = new Date().toISOString().split('T')[0]
+      const entries = await db.collection('activity_log')
+        .find({ date: today })
+        .sort({ created_at: -1 })
+        .toArray()
+      res.json(entries)
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // POST /api/activity
   router.post('/', async (req, res) => {
     try {
