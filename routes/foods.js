@@ -89,10 +89,12 @@ async function searchFatSecret(query) {
 
 // ─── Level 1: Open Food Facts ─────────────────────────────────────────────────
 async function searchOpenFoodFacts(query) {
-  const url = 'https://world.openfoodfacts.org/cgi/search.pl?' + new URLSearchParams({
-    search_terms: query, search_simple: 1, action: 'process', json: 1, page_size: 5,
-    fields: 'product_name,brands,nutriments',
-  })
+  // NOTE: URLSearchParams encodes commas → %2C which breaks OFF `fields` param.
+  // Build URL manually so commas stay literal.
+  const url = 'https://world.openfoodfacts.org/cgi/search.pl'
+    + '?search_terms=' + encodeURIComponent(query)
+    + '&search_simple=1&json=1&page_size=5'
+    + '&fields=product_name,brands,nutriments'
   const res = await fetch(url, {
     signal: AbortSignal.timeout(8000),
     headers: { 'User-Agent': 'HealthDashboard/1.0 (health tracking app)' },
