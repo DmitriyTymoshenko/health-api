@@ -151,43 +151,45 @@ async function searchUSDA(query) {
 
 // ─── Level 4: Web search (DuckDuckGo HTML parse) ─────────────────────────────
 async function searchWeb(query) {
-  const searchQ = `${query} calories nutrition per 100g`
+  const searchQ = `${query} calories nutrition facts per 100g`
   const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(searchQ)}`
   const res = await fetch(url, {
     signal: AbortSignal.timeout(10000),
     headers: {
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
       'Accept-Language': 'en-US,en;q=0.9',
     },
   })
   const html = await res.text()
 
-  // Extract text from result snippets
+  // Collect all snippet text
   const snippets = [...html.matchAll(/class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g)]
     .map(m => m[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim())
 
-  for (const snippet of snippets) {
-    const kcal    = snippet.match(/(\d+(?:\.\d+)?)\s*(?:cal|kcal|calories)/i)
-    const protein = snippet.match(/protein[:\s]+(\d+(?:\.\d+)?)\s*g/i)
-    const carbs   = snippet.match(/carb(?:ohydrate)?s?[:\s]+(\d+(?:\.\d+)?)\s*g/i)
-    const fat     = snippet.match(/fat[:\s]+(\d+(?:\.\d+)?)\s*g/i)
-    const fiber   = snippet.match(/fiber[:\s]+(\d+(?:\.\d+)?)\s*g/i)
-    const sugar   = snippet.match(/sugar[s]?[:\s]+(\d+(?:\.\d+)?)\s*g/i)
+  // Collect nutrition values across ALL snippets (not just first match)
+  const combined = snippets.join(' ')
+  const num = (re) => { const m = combined.match(re); return m ? parseFloat(m[1]) : 0 }
 
-    if (kcal) {
-      return [{
-        food_id: null, name: query, brand: null,
-        kcal_per_100g:    parseInt(kcal[1]),
-        protein_per_100g: protein ? parseFloat(protein[1]) : 0,
-        carbs_per_100g:   carbs   ? parseFloat(carbs[1])   : 0,
-        fat_per_100g:     fat     ? parseFloat(fat[1])     : 0,
-        fiber_per_100g:   fiber   ? parseFloat(fiber[1])   : 0,
-        sugar_per_100g:   sugar   ? parseFloat(sugar[1])   : 0,
-        salt_per_100g: 0,
-        source: 'web',
-        web_search_url: `https://duckduckgo.com/?q=${encodeURIComponent(searchQ)}`,
-      }]
-    }
+  const kcal    = num(/(\d+(?:\.\d+)?)\s*(?:cal|kcal|calories)/i)
+  const protein = num(/protein[:\s,]+(\d+(?:\.\d+)?)\s*g/i)
+  const carbs   = num(/carb(?:ohydrate)?s?[:\s,]+(\d+(?:\.\d+)?)\s*g/i)
+  const fat     = num(/(?:^|[^a-z])fat[:\s,]+(\d+(?:\.\d+)?)\s*g/i)
+  const fiber   = num(/fiber[:\s,]+(\d+(?:\.\d+)?)\s*g/i)
+  const sugar   = num(/sugar[s]?[:\s,]+(\d+(?:\.\d+)?)\s*g/i)
+
+  if (kcal > 0) {
+    return [{
+      food_id: null, name: query, brand: null,
+      kcal_per_100g:    Math.round(kcal),
+      protein_per_100g: +protein.toFixed(1),
+      carbs_per_100g:   +carbs.toFixed(1),
+      fat_per_100g:     +fat.toFixed(1),
+      fiber_per_100g:   +fiber.toFixed(1),
+      sugar_per_100g:   +sugar.toFixed(1),
+      salt_per_100g: 0,
+      source: 'web',
+      web_search_url: `https://duckduckgo.com/?q=${encodeURIComponent(searchQ)}`,
+    }]
   }
   return []
 }
