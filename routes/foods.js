@@ -199,7 +199,7 @@ module.exports = function (getDB) {
   const router = Router()
 
   // GET /api/foods/search-external?q=query
-  // Chain: Open Food Facts → FatSecret → USDA → Web search
+  // Chain: Open Food Facts → Web search → USDA → FatSecret (generic fallback)
   router.get('/search-external', async (req, res) => {
     const query = (req.query.q || '').trim()
     if (!query) return res.json([])
@@ -207,18 +207,18 @@ module.exports = function (getDB) {
     let results = []
     let source = null
 
-    // 1. Open Food Facts — full nutrition (fiber, sugar, salt)
+    // 1. Open Food Facts — full nutrition (fiber, sugar, salt), best for branded EU/UA products
     try {
       results = await searchOpenFoodFacts(query)
       if (results.length) source = 'openfoodfacts'
     } catch (e) { console.warn('[foods] OFF error:', e.message) }
 
-    // 2. FatSecret — generic foods
+    // 2. Web search (DuckDuckGo) — branded products not in OFF (e.g. Roshen, local brands)
     if (!results.length) {
       try {
-        results = await searchFatSecret(query)
-        if (results.length) source = 'fatsecret'
-      } catch (e) { console.warn('[foods] FatSecret error:', e.message) }
+        results = await searchWeb(query)
+        if (results.length) source = 'web'
+      } catch (e) { console.warn('[foods] Web search error:', e.message) }
     }
 
     // 3. USDA FoodData Central — US branded products
@@ -229,7 +229,7 @@ module.exports = function (getDB) {
       } catch (e) { console.warn('[foods] USDA error:', e.message) }
     }
 
-    // 4. Web search (DuckDuckGo) — last resort
+    // 4. FatSecret — generic/common foods (banana, rice, chicken)
     if (!results.length) {
       try {
         results = await searchWeb(query)
