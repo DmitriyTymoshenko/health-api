@@ -105,8 +105,14 @@ module.exports = function (getDB) {
         }
       }
 
+      const isFallback = !!(recoveryFallbackDate || sleepFallbackDate)
+      const noData = !recovery && !sleep && !cycle
+
       res.json({
         date,
+        is_fallback: isFallback,
+        no_data: noData,
+        fallback_reason: noData ? 'sync_missing' : isFallback ? 'pending_or_incomplete' : null,
         calories_burned,
         calories_source,
         strain: cycle?.strain ?? null,
@@ -232,9 +238,55 @@ module.exports = function (getDB) {
   // POST /api/whoop/sync
   router.post('/sync', async (req, res) => {
     const { exec } = require('child_process')
-    exec('node /tmp/health-api/scripts/sync-whoop.js', (err) => {
+    exec('node /root/chuttyevo-agent/health-api/scripts/sync-whoop.js', (err) => {
       res.json({ ok: !err, error: err?.message })
     })
+  })
+
+  // GET /api/whoop/callback — OAuth2 callback (no basicauth, handled by Caddy exception)
+  router.get('/callback', async (req, res) => {
+    const { code } = req.query
+    if (!code) return res.status(400).send('<h2>❌ No code received</h2>')
+
+    const https = require('https')
+    const fs = require('fs')
+    const CREDS_PATH = '/root/.openclaw/workspace/integrations/whoop.json'
+    const REDIRECT_URI = 'https://srv1532186.hstgr.cloud/health-api/api/whoop/callback'
+
+    try {
+      const creds = JSON.parse(fs.readFileSync(CREDS_PATH, 'utf8'))
+      const body = new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        client_id: creds.client_id,
+        client_secret: creds.client_secret,
+        redirect_uri: REDIRECT_URI,
+      }).toString()
+
+      const tokenData = await new Promise((resolve, reject) => {
+        const u = new URL('https://api.prod.whoop.com/oauth/oauth2/token')
+        const opts = {
+          hostname: u.hostname, path: u.pathname, method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) }
+        }
+        const r = https.request(opts, (resp) => {
+          let d = ''
+          resp.on('data', c => d += c)
+          resp.on('end', () => resp.statusCode >= 400 ? reject(new Error(`${resp.statusCode}: ${d}`)) : resolve(JSON.parse(d)))
+        })
+        r.on('error', reject)
+        r.write(body); r.end()
+      })
+
+      creds.access_token = tokenData.access_token
+      creds.refresh_token = tokenData.refresh_token || creds.refresh_token
+      creds.token_expires_at = new Date(Date.now() + (tokenData.expires_in || 3600) * 1000).toISOString()
+      fs.writeFileSync(CREDS_PATH, JSON.stringify(creds, null, 2))
+
+      res.send('<h1>✅ WHOOP авторизація успішна! Можна закрити це вікно.<br>Дані будуть синхронізовані автоматично.</h1>')
+    } catch (err) {
+      res.status(500).send(`<h2>❌ Помилка: ${err.message}</h2>`)
+    }
   })
 
   // GET /api/whoop/weekly-compare — compare this week vs last week
