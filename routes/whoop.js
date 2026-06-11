@@ -245,8 +245,9 @@ module.exports = function (getDB) {
 
   // GET /api/whoop/callback — OAuth2 callback (no basicauth, handled by Caddy exception)
   router.get('/callback', async (req, res) => {
-    const { code } = req.query
-    if (!code) return res.status(400).send('<h2>❌ No code received</h2>')
+    const { code, error, error_description } = req.query
+    if (error) return res.status(400).send(`<h2>❌ WHOOP повернув помилку: ${error}</h2><p>${error_description || ''}</p>`)
+    if (!code) return res.status(400).send(`<h2>❌ No code received</h2><p>Params: ${JSON.stringify(req.query)}</p>`)
 
     const https = require('https')
     const fs = require('fs')
