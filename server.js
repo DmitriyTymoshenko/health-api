@@ -8,7 +8,7 @@ const pkg = require('./package.json')
 
 const app = express()
 const PORT = 3001
-const MONGO_URL = 'mongodb://localhost:27017'
+const MONGO_URL = process.env.MONGO_URL || 'mongodb://localhost:27017'
 const DB_NAME = 'health_tracker'
 
 app.use(cors())
@@ -281,6 +281,7 @@ app.use('/api/activity', require('./routes/activity')(getDB))
 app.use('/api/whoop', require('./routes/whoop')(getDB))
 app.use('/api/settings', require('./routes/settings')(getDB))
 app.use('/api/activity-plan', require('./routes/activity_plan')(getDB))
+app.use('/api/body_measurements', require('./routes/body_measurements')(getDB))
 
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }))

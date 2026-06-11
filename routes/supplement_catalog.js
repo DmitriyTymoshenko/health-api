@@ -24,6 +24,15 @@ const DEFAULT_CYCLES = [
   },
 ]
 
+function calculateStreak(heatmap) {
+  let streak = 0
+  for (let i = heatmap.length - 1; i >= 0; i--) {
+    if (heatmap[i].taken) streak++
+    else break
+  }
+  return streak
+}
+
 module.exports = function (getDB) {
   const router = Router()
 
@@ -206,6 +215,78 @@ module.exports = function (getDB) {
         return { ...c, days_left: daysLeft }
       }).filter(c => c.days_left >= 0 && c.days_left <= 7)
       res.json(alerts)
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // GET /api/catalog/cycles/adherence — adherence stats for all active/paused cycles
+  router.get('/cycles/adherence', async (req, res) => {
+    try {
+      const db = getDB()
+      const cycles = await db.collection('supplement_cycles').find({
+        status: { $in: ['active', 'paused'] }
+      }).toArray()
+
+      const today = new Date()
+      const results = []
+
+      for (const cycle of cycles) {
+        const start = new Date(cycle.start_date)
+        const end = new Date(start)
+        end.setDate(end.getDate() + cycle.duration_weeks * 7)
+        const effectiveEnd = end < today ? end : today
+
+        // Count total days in the cycle so far
+        const totalDays = Math.max(1, Math.ceil((effectiveEnd - start) / (1000 * 60 * 60 * 24)))
+
+        // Get all intake records for this supplement in this date range
+        const startStr = cycle.start_date
+        const endStr = effectiveEnd.toISOString().split('T')[0]
+
+        const intakeCount = await db.collection('supplement_intake').countDocuments({
+          supplement_id: cycle.supplement_id,
+          date: { $gte: startStr, $lte: endStr }
+        })
+
+        // Get day-by-day data for heatmap (last 42 days max for perf)
+        const heatmapStart = new Date(effectiveEnd)
+        heatmapStart.setDate(heatmapStart.getDate() - 41)
+        const effectiveHeatmapStart = heatmapStart > start ? heatmapStart : start
+        const heatmapStartStr = effectiveHeatmapStart.toISOString().split('T')[0]
+
+        const intakeDays = await db.collection('supplement_intake').find({
+          supplement_id: cycle.supplement_id,
+          date: { $gte: heatmapStartStr, $lte: endStr }
+        }).project({ date: 1, _id: 0 }).toArray()
+
+        const takenDates = new Set(intakeDays.map(i => i.date))
+
+        // Build heatmap array
+        const heatmap = []
+        const cursor = new Date(effectiveHeatmapStart)
+        while (cursor <= effectiveEnd) {
+          const dateStr = cursor.toISOString().split('T')[0]
+          heatmap.push({ date: dateStr, taken: takenDates.has(dateStr) })
+          cursor.setDate(cursor.getDate() + 1)
+        }
+
+        const adherence = Math.round((intakeCount / totalDays) * 100)
+        const streak = calculateStreak(heatmap)
+
+        results.push({
+          cycle_id: cycle.id,
+          supplement_id: cycle.supplement_id,
+          supplement_name: cycle.supplement_name,
+          total_days: totalDays,
+          taken_days: intakeCount,
+          adherence_pct: adherence,
+          current_streak: streak,
+          heatmap,
+        })
+      }
+
+      res.json(results)
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
