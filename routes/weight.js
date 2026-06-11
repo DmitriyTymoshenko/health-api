@@ -56,20 +56,32 @@ module.exports = function (getDB) {
         .limit(14)
         .toArray()
 
-      if (entries.length < 2) return res.json({ status: 'insufficient_data', message: 'Недостатньо даних' })
+      if (entries.length < 1) return res.json({ status: 'insufficient_data', message: 'Недостатньо даних' })
 
       // Use today's weight if available, otherwise fall back to latest entry
       const latest = todayEntry || entries[0]
       const today_logged = !!todayEntry
-      const oldest7 = entries.find(e => {
-        const diff = (new Date(latest.date) - new Date(e.date)) / 86400000
-        return diff >= 6
-      }) || entries[entries.length - 1]
 
-      const daysDiff = Math.round((new Date(latest.date) - new Date(oldest7.date)) / 86400000) || 1
+      // Use weight goal start as baseline (most accurate tracking)
+      const weightGoal = await db.collection('goals').findOne({ type: 'weight' })
+      let baselineWeight, baselineDate, daysDiff, oldest7
+
+      if (weightGoal && weightGoal.start_value) {
+        baselineWeight = weightGoal.start_value
+        baselineDate = new Date(weightGoal.created_at).toISOString().split('T')[0]
+        daysDiff = Math.round((new Date(latest.date) - new Date(baselineDate)) / 86400000) || 1
+        oldest7 = { weight_kg: baselineWeight, date: baselineDate }
+      } else {
+        // Fallback: use all entries (not limited to 14) to find oldest with 6+ day gap
+        const allEntries = await db.collection('weight_log').find({}).sort({ date: 1 }).toArray()
+        oldest7 = allEntries[0] || entries[entries.length - 1]
+        daysDiff = Math.round((new Date(latest.date) - new Date(oldest7.date)) / 86400000) || 1
+        baselineWeight = oldest7.weight_kg
+        baselineDate = oldest7.date
+      }
 
       if (daysDiff < 4) return res.json({ status: 'insufficient_data', message: `Замало даних (${daysDiff} дн.). Потрібно 5+ днів записів`, days_analyzed: daysDiff, latest_weight: latest.weight_kg })
-      const actualChange = parseFloat((latest.weight_kg - oldest7.weight_kg).toFixed(1))
+      const actualChange = parseFloat((latest.weight_kg - baselineWeight).toFixed(1))
       const actualPerWeek = parseFloat((actualChange / daysDiff * 7).toFixed(2))
 
       const settings = await db.collection('user_settings').findOne({ key: 'default' })
@@ -112,7 +124,8 @@ module.exports = function (getDB) {
         planned_per_week: plannedPerWeek,
         latest_weight: latest.weight_kg,
         latest_date: latest.date,
-        oldest_weight: oldest7.weight_kg,
+        oldest_weight: baselineWeight,
+        oldest_date: baselineDate,
         days_analyzed: daysDiff,
         plateau,
         today_logged,
