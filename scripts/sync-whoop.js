@@ -8,7 +8,7 @@ const fs = require('fs')
 const { MongoClient } = require('mongodb')
 
 const CREDS_PATH = '/root/.openclaw/workspace/integrations/whoop.json'
-const MONGO_URL = process.env.MONGO_URL || 'mongodb://localhost:27017'
+const MONGO_URL = process.env.MONGO_URL || 'mongodb://health_app:cfef0127facb2dccf985319ee6043cbdfe47170c40fd1767@localhost:27017/health_tracker?authSource=admin'
 const DB_NAME = 'health_tracker'
 const WHOOP_TOKEN_URL = 'https://api.prod.whoop.com/oauth/oauth2/token'
 const WHOOP_API = 'https://api.prod.whoop.com/developer/v1'
