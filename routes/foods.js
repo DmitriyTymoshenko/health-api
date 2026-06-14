@@ -292,11 +292,19 @@ module.exports = function (getDB) {
     }
   })
 
-  // GET /api/foods — list all saved
+  // GET /api/foods?search=query — list all saved, with optional search filter
   router.get('/', async (req, res) => {
     try {
       const db = getDB()
-      const foods = await db.collection('foods_library').find({}).sort({ use_count: -1 }).limit(50).toArray()
+      const search = (req.query.search || '').trim()
+      const filter = search
+        ? { $or: [
+            { name:    { $regex: search, $options: 'i' } },
+            { name_ua: { $regex: search, $options: 'i' } },
+            { brand:   { $regex: search, $options: 'i' } },
+          ]}
+        : {}
+      const foods = await db.collection('foods_library').find(filter).sort({ use_count: -1 }).limit(50).toArray()
       res.json(foods)
     } catch (err) {
       res.status(500).json({ error: err.message })

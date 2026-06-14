@@ -126,6 +126,14 @@ module.exports = function (getDB) {
       if (exists) return res.json(exists)
       const doc = { supplement_id: sid, date: d, taken_at: new Date().toISOString() }
       const result = await db.collection('supplement_intake').insertOne(doc)
+      // Auto-decrement stock_remaining if tracked
+      const supp = await db.collection('supplement_catalog').findOne({ id: sid })
+      if (supp && supp.stock_remaining != null && supp.stock_remaining > 0) {
+        await db.collection('supplement_catalog').updateOne(
+          { id: sid },
+          { $inc: { stock_remaining: -1 } }
+        )
+      }
       res.status(201).json({ ...doc, _id: result.insertedId })
     } catch (err) {
       res.status(500).json({ error: err.message })
@@ -298,6 +306,27 @@ module.exports = function (getDB) {
       const db = getDB()
       const data = await db.collection('supplement_knowledge').find({}).toArray()
       res.json(data)
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // PATCH /api/catalog/:id/stock — update stock_remaining
+  router.patch('/:id/stock', async (req, res) => {
+    try {
+      const db = getDB()
+      const id = Number(req.params.id)
+      const updates = {}
+      if (req.body.stock_remaining !== undefined) updates.stock_remaining = Number(req.body.stock_remaining)
+      if (req.body.stock_count !== undefined) updates.stock_count = Number(req.body.stock_count)
+      if (Object.keys(updates).length === 0) return res.status(400).json({ error: 'stock_remaining or stock_count required' })
+      const result = await db.collection('supplement_catalog').findOneAndUpdate(
+        { id },
+        { $set: updates },
+        { returnDocument: 'after' }
+      )
+      if (!result) return res.status(404).json({ error: 'Not found' })
+      res.json(result)
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
