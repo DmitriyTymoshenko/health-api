@@ -31,10 +31,19 @@ module.exports = function (getDB) {
         name,
         icon: icon || '✅',
         category: category || 'general',
-        frequency: frequency || 'daily', // daily | weekly
-        target_days: target_days || 7,   // days per week for weekly habits
+        frequency: frequency || 'daily',
+        target_days: target_days || 7,
         color: color || '#4CAF50',
         description: description || '',
+        type: req.body.type || 'build',           // build | quit
+        // Atomic Habits fields
+        identity: req.body.identity || '',         // "Я є людина яка..."
+        cue: req.body.cue || '',                   // тригер/сигнал
+        implementation: req.body.implementation || '', // коли/де/як
+        two_min_version: req.body.two_min_version || '', // правило 2 хвилин
+        stack_after: req.body.stack_after || '',   // після якої звички (habit stacking)
+        reward: req.body.reward || '',             // нагорода
+        why: req.body.why || '',                   // глибока мотивація
         is_active: true,
         order: req.body.order || 0,
         created_at: new Date(),
@@ -137,6 +146,25 @@ module.exports = function (getDB) {
         const result = await db.collection('habit_logs').insertOne(doc)
         return res.json({ _id: result.insertedId, ...doc })
       }
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // GET /api/habits/calendar/:id?days=30 — completion calendar for one habit
+  router.get('/calendar/:id', async (req, res) => {
+    try {
+      const db = getDB()
+      const days = parseInt(req.query.days) || 30
+      const habitId = req.params.id
+      const result = []
+      for (let i = days - 1; i >= 0; i--) {
+        const d = new Date(); d.setDate(d.getDate() - i)
+        const dateStr = d.toISOString().slice(0, 10)
+        const log = await db.collection('habit_logs').findOne({ habit_id: habitId, date: dateStr })
+        result.push({ date: dateStr, completed: !!(log && log.completed) })
+      }
+      res.json(result)
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
