@@ -284,6 +284,8 @@ app.use('/api/activity-plan', require('./routes/activity_plan')(getDB))
 app.use('/api/body_measurements', require('./routes/body_measurements')(getDB))
 app.use('/api/meal-templates', require('./routes/meal_templates')(getDB))
 app.use('/api/nutrition/recognize', require('./routes/nutrition_recognize')(getDB))
+app.use('/api/habits', require('./routes/habits')(getDB))
+app.use('/api/profile', require('./routes/personal_profile')(getDB))
 
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }))
