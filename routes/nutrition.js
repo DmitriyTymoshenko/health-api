@@ -1,4 +1,163 @@
 const { Router } = require('express')
+const https = require('https')
+
+const TELEGRAM_BOT_TOKEN = '' // notifications disabled per user request
+const TELEGRAM_OWNER_ID = process.env.OWNER_TELEGRAM_ID || '455440443'
+
+function progressBar(current, target, length = 10) {
+  const pct = Math.min(current / target, 1)
+  const filled = Math.round(pct * length)
+  return '█'.repeat(filled) + '░'.repeat(length - filled)
+}
+
+function getMealLabel(mealType) {
+  const labels = { breakfast: 'сніданок', lunch: 'обід', snack: 'перекус', dinner: 'вечеря' }
+  return labels[mealType] || mealType
+}
+
+function getNextMealType(currentMealType) {
+  const order = ['breakfast', 'lunch', 'snack', 'dinner']
+  const idx = order.indexOf(currentMealType)
+  if (idx === -1 || idx === order.length - 1) return null
+  return order[idx + 1]
+}
+
+function getNextMealByHour() {
+  const kyivHour = parseInt(new Date().toLocaleString('uk', { timeZone: 'Europe/Kyiv', hour: 'numeric', hour12: false }))
+  if (kyivHour < 11) return 'breakfast'
+  if (kyivHour < 15) return 'lunch'
+  if (kyivHour < 18) return 'snack'
+  return 'dinner'
+}
+
+function sendTelegramMessage(token, chatId, text) {
+  if (!token) return
+  const body = JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' })
+  const options = {
+    hostname: 'api.telegram.org',
+    path: `/bot${token}/sendMessage`,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+  }
+  const req = https.request(options, (res) => {
+    res.resume() // drain response
+  })
+  req.on('error', () => {}) // fire-and-forget, ignore errors
+  req.write(body)
+  req.end()
+}
+
+async function sendMealTelegramNotification(db, doc) {
+  try {
+    if (!TELEGRAM_BOT_TOKEN) return
+
+    const today = doc.date || new Date().toISOString().split('T')[0]
+
+    // Get today's totals
+    const todayEntries = await db.collection('nutrition_log').find({ date: today }).toArray()
+    const totals = todayEntries.reduce(
+      (acc, e) => {
+        acc.kcal += e.kcal || e.calories || 0
+        acc.protein_g += e.protein_g || 0
+        acc.fat_g += e.fat_g || 0
+        acc.carbs_g += e.carbs_g || 0
+        return acc
+      },
+      { kcal: 0, protein_g: 0, fat_g: 0, carbs_g: 0 }
+    )
+
+    // Get profile targets
+    const DEFAULT_KCAL = 1929
+    const DEFAULT_PROTEIN = 150
+    let kcalTarget = DEFAULT_KCAL
+    let proteinTarget = DEFAULT_PROTEIN
+
+    const profile = await db.collection('personal_profile').findOne({ _type: 'profile' })
+    if (profile) {
+      if (profile.daily_kcal_goal) {
+        kcalTarget = profile.daily_kcal_goal
+      } else if (profile.tdee_kcal && profile.deficit_kcal) {
+        kcalTarget = profile.tdee_kcal - profile.deficit_kcal
+      }
+      if (profile.daily_protein_goal_g) proteinTarget = profile.daily_protein_goal_g
+    }
+
+    // Also check WHOOP for dynamic calorie target
+    const whoopCycle = await db.collection('whoop_cycles').findOne({ date: today })
+    const caloriesBurned = whoopCycle?.calories_burned
+    const deficitGoal = profile?.deficit_kcal || 500
+    if (caloriesBurned && caloriesBurned > 1200) {
+      kcalTarget = Math.round(caloriesBurned - deficitGoal)
+    }
+
+    const kcalPct = Math.round((totals.kcal / kcalTarget) * 100)
+    const proteinPct = Math.round((totals.protein_g / proteinTarget) * 100)
+    const remainingKcal = Math.max(0, kcalTarget - totals.kcal)
+    const remainingProtein = Math.max(0, proteinTarget - totals.protein_g)
+
+    const mealLabel = getMealLabel(doc.meal_type)
+    const proteinBar = progressBar(totals.protein_g, proteinTarget)
+
+    // Meal plan for remaining meals
+    const allMeals = ['breakfast', 'lunch', 'snack', 'dinner']
+    const loggedMealTypes = new Set(todayEntries.map(e => e.meal_type))
+    const remainingMeals = allMeals.filter(m => !loggedMealTypes.has(m))
+
+    const mealBudgets = { breakfast: 0.25, lunch: 0.35, snack: 0.15, dinner: 0.25 }
+    const remainingPctTotal = remainingMeals.reduce((s, m) => s + mealBudgets[m], 0) || 1
+
+    const mealOptions = {
+      breakfast: [
+        { name: 'Омлет з сиром і шинкою', cal: 370, pro: 26 },
+        { name: 'Протеінова гранола + молоко', cal: 450, pro: 22 },
+        { name: 'Pro Feel + 2 яйця', cal: 280, pro: 30 },
+      ],
+      lunch: [
+        { name: 'Куряче філе 200г + гречка', cal: 430, pro: 48 },
+        { name: 'Лосось 200г + овочі', cal: 480, pro: 42 },
+        { name: 'Яловичина 150г + картопля', cal: 520, pro: 38 },
+      ],
+      snack: [
+        { name: 'Pro Feel', cal: 114, pro: 19 },
+        { name: 'Fitwin батончик', cal: 219, pro: 20 },
+        { name: 'Грецький йогурт 200г', cal: 160, pro: 20 },
+      ],
+      dinner: [
+        { name: 'Риба на грилі + броколі', cal: 320, pro: 42 },
+        { name: 'Куряче філе 200г + салат', cal: 300, pro: 44 },
+        { name: 'Сирники 3шт зі сметаною', cal: 420, pro: 24 },
+      ],
+    }
+
+    const mealEmoji = { breakfast: '🌅', lunch: '☀️', snack: '🍎', dinner: '🌙' }
+    const nums = ['①', '②', '③']
+
+    let text = `🍽️ *${doc.food_name}* — ${mealLabel}\n`
+    text += `${Math.round(doc.kcal || 0)} ккал | Б: ${Math.round(doc.protein_g || 0)}г | Ж: ${Math.round(doc.fat_g || 0)}г | В: ${Math.round(doc.carbs_g || 0)}г\n\n`
+    const whoopSuffix = caloriesBurned ? ` 🔥 спалено ${caloriesBurned}` : ''
+    text += `📊 *День: ${Math.round(totals.kcal)} / ${kcalTarget} ккал* (${kcalPct}%)${whoopSuffix}\n`
+    text += `Білок: ${Math.round(totals.protein_g)}г / ${proteinTarget}г ${proteinBar} ${proteinPct}%\n`
+
+    if (remainingMeals.length > 0) {
+      text += `\n📋 *План на сьогодні:*\n`
+      for (const meal of remainingMeals) {
+        const calBudget = Math.round(remainingKcal * (mealBudgets[meal] / remainingPctTotal))
+        const proBudget = Math.round(remainingProtein * (mealBudgets[meal] / remainingPctTotal))
+        const emoji = mealEmoji[meal] || '🍽️'
+        const label = getMealLabel(meal)
+        text += `\n${emoji} *${label.charAt(0).toUpperCase() + label.slice(1)}* (~${calBudget} ккал | ${proBudget}г Б)\n`
+        const opts = (mealOptions[meal] || []).slice(0, 3)
+        opts.forEach((o, i) => {
+          text += `${nums[i]} ${o.name} — ${o.cal} ккал | ${o.pro}г Б\n`
+        })
+      }
+    }
+
+    sendTelegramMessage(TELEGRAM_BOT_TOKEN, TELEGRAM_OWNER_ID, text)
+  } catch (_err) {
+    // fire-and-forget — never block the main request
+  }
+}
 
 module.exports = function (getDB) {
   const router = Router()
@@ -87,6 +246,9 @@ module.exports = function (getDB) {
 
       const result = await db.collection('nutrition_log').insertOne(doc)
       res.status(201).json({ ...doc, _id: result.insertedId })
+
+      // Fire-and-forget Telegram notification
+      sendMealTelegramNotification(db, doc)
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -213,23 +375,6 @@ module.exports = function (getDB) {
     }
   })
 
-
-  // PUT /api/nutrition/:id - update a nutrition entry
-  router.put('/:id', async (req, res) => {
-    try {
-      const db = getDB()
-      const { ObjectId } = require('mongodb')
-      const result = await db.collection('nutrition_log').updateOne(
-        { _id: new ObjectId(req.params.id) },
-        { $set: req.body }
-      )
-      if (result.matchedCount === 0) return res.status(404).json({ error: 'Not found' })
-      const updated = await db.collection('nutrition_log').findOne({ _id: new ObjectId(req.params.id) })
-      res.json(updated)
-    } catch (err) {
-      res.status(500).json({ error: err.message })
-    }
-  })
 
   // DELETE /api/nutrition/:id
   router.delete('/:id', async (req, res) => {

@@ -47,7 +47,7 @@ function getDB() {
 // Seed data from fitness.json
 async function seedData() {
   try {
-    const fitnessPath = '/root/.openclaw/workspace/data/fitness.json'
+    const fitnessPath = '/root/.config/health/fitness.json'
     if (!fs.existsSync(fitnessPath)) {
       console.log('fitness.json not found, skipping seed')
       return
@@ -286,6 +286,7 @@ app.use('/api/meal-templates', require('./routes/meal_templates')(getDB))
 app.use('/api/nutrition/recognize', require('./routes/nutrition_recognize')(getDB))
 app.use('/api/habits', require('./routes/habits')(getDB))
 app.use('/api/profile', require('./routes/personal_profile')(getDB))
+app.use('/api/recommendations', require('./routes/recommendations')(getDB))
 
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }))
