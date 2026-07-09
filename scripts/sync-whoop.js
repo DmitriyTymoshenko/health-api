@@ -7,7 +7,7 @@ const https = require('https')
 const fs = require('fs')
 const { MongoClient } = require('mongodb')
 
-const CREDS_PATH = '/root/.openclaw/workspace/integrations/whoop.json'
+const CREDS_PATH = '/root/.config/whoop/whoop.json'
 const MONGO_URL = process.env.MONGO_URL || 'mongodb://health_app:cfef0127facb2dccf985319ee6043cbdfe47170c40fd1767@localhost:27017/health_tracker?authSource=admin'
 const DB_NAME = 'health_tracker'
 const WHOOP_TOKEN_URL = 'https://api.prod.whoop.com/oauth/oauth2/token'
@@ -23,6 +23,9 @@ function readCreds() {
 }
 
 function writeCreds(creds) {
+  // self-heal: ensure the stable creds dir exists before writing (guards against
+  // the recurring workspace-vanish class of bug — see docs/handoffs/whoop-sync-fix)
+  fs.mkdirSync(require('path').dirname(CREDS_PATH), { recursive: true })
   fs.writeFileSync(CREDS_PATH, JSON.stringify(creds, null, 2))
 }
 

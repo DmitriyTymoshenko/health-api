@@ -8,7 +8,7 @@ const http = require('http')
 const fs = require('fs')
 const { URL } = require('url')
 
-const CREDS_PATH = '/root/.openclaw/workspace/integrations/whoop.json'
+const CREDS_PATH = '/root/.config/whoop/whoop.json'
 const REDIRECT_URI = 'http://localhost:9876/callback'
 const WHOOP_TOKEN_URL = 'https://api.prod.whoop.com/oauth/oauth2/token'
 const SCOPES = 'offline read:recovery read:sleep read:workout read:profile read:body_measurement read:cycles'

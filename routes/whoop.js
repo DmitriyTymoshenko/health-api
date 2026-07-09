@@ -251,7 +251,7 @@ module.exports = function (getDB) {
 
     const https = require('https')
     const fs = require('fs')
-    const CREDS_PATH = '/root/.openclaw/workspace/integrations/whoop.json'
+    const CREDS_PATH = '/root/.config/whoop/whoop.json'
     const REDIRECT_URI = 'https://srv1532186.hstgr.cloud/health-api/api/whoop/callback'
 
     try {

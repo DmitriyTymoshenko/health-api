@@ -2,7 +2,7 @@ const https = require('https')
 const fs = require('fs')
 const { MongoClient } = require('mongodb')
 
-const CREDS_PATH = '/root/.openclaw/workspace/integrations/whoop.json'
+const CREDS_PATH = '/root/.config/whoop/whoop.json'
 
 function httpGet(url, token) {
   return new Promise((resolve, reject) => {

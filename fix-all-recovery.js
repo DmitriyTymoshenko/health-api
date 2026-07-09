@@ -13,7 +13,7 @@ function httpGet(url, token) {
 }
 
 async function main() {
-  const token = JSON.parse(fs.readFileSync('/root/.openclaw/workspace/integrations/whoop.json')).access_token
+  const token = JSON.parse(fs.readFileSync('/root/.config/whoop/whoop.json')).access_token
   const client = new MongoClient('mongodb://localhost:27017')
   await client.connect()
   const db = client.db('health_tracker')
