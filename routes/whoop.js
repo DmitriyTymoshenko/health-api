@@ -243,6 +243,26 @@ module.exports = function (getDB) {
     })
   })
 
+  // GET /api/whoop/authorize — 302 to WHOOP's consent screen (no basicauth, Caddy exception).
+  // Exists so re-auth is a SHORT openable link (/whoop-auth) instead of a 400-char URL that
+  // has to be copied out of a terminal — see rules/lessons-learned.md 2026-07-31.
+  router.get('/authorize', (req, res) => {
+    const fs = require('fs')
+    try {
+      const creds = JSON.parse(fs.readFileSync('/root/.config/whoop/whoop.json', 'utf8'))
+      const url = 'https://api.prod.whoop.com/oauth/oauth2/auth?' + new URLSearchParams({
+        response_type: 'code',
+        client_id: creds.client_id,
+        redirect_uri: 'https://srv1532186.hstgr.cloud/health-api/api/whoop/callback',
+        scope: 'offline read:recovery read:sleep read:workout read:profile read:body_measurement read:cycles',
+        state: require('crypto').randomBytes(16).toString('hex'),
+      }).toString()
+      res.redirect(302, url)
+    } catch (err) {
+      res.status(500).send(`<h2>❌ Не вдалось побудувати authorize-URL: ${err.message}</h2>`)
+    }
+  })
+
   // GET /api/whoop/callback — OAuth2 callback (no basicauth, handled by Caddy exception)
   router.get('/callback', async (req, res) => {
     const { code, error, error_description } = req.query

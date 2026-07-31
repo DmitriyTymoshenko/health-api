@@ -56,6 +56,28 @@ function httpRequest(url, opts, body) {
   })
 }
 
+// WHOOP refresh tokens are SINGLE-USE and rotated: the response carries the next
+// refresh_token, and the one we sent is dead the moment WHOOP answers. Two consequences,
+// both learned the hard way on 2026-07-30 (66 silent failures, 3 days of frozen data):
+//   1. `scope: 'offline'` is REQUIRED on the refresh call — without it WHOOP does not
+//      return a rotated refresh_token (developer.whoop.com → OAuth).
+//   2. A 5xx/network error is NOT a safe failure: WHOOP may have rotated server-side and
+//      lost the response, leaving our stored token already spent. Retry immediately —
+//      it is the only chance to land a response we can persist. A 4xx means the token is
+//      definitively dead and only an interactive re-auth recovers it, so stop and shout.
+const REFRESH_MAX_ATTEMPTS = 3
+const REAUTH_MARKER = 'WHOOP_REAUTH_REQUIRED'
+
+class ReauthRequiredError extends Error {
+  constructor(detail) {
+    super(`${REAUTH_MARKER}: refresh_token rejected by WHOOP (${detail}). ` +
+      `Interactive re-auth needed: node ${__filename.replace('sync-whoop.js', 'whoop-reauth.js')}`)
+    this.name = 'ReauthRequiredError'
+  }
+}
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+
 async function refreshToken(creds) {
   log('Refreshing WHOOP token...')
   const body = new URLSearchParams({
@@ -63,23 +85,37 @@ async function refreshToken(creds) {
     refresh_token: creds.refresh_token,
     client_id: creds.client_id,
     client_secret: creds.client_secret,
+    scope: 'offline',
   }).toString()
 
-  const data = await httpRequest(WHOOP_TOKEN_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'Content-Length': Buffer.byteLength(body),
-    },
-  }, body)
+  let lastErr
+  for (let attempt = 1; attempt <= REFRESH_MAX_ATTEMPTS; attempt++) {
+    try {
+      const data = await httpRequest(WHOOP_TOKEN_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Content-Length': Buffer.byteLength(body),
+        },
+      }, body)
 
-  creds.access_token = data.access_token
-  creds.refresh_token = data.refresh_token || creds.refresh_token
-  const expiresIn = data.expires_in || 3600
-  creds.token_expires_at = new Date(Date.now() + expiresIn * 1000).toISOString()
-  writeCreds(creds)
-  log(`Token refreshed, expires at ${creds.token_expires_at}`)
-  return creds
+      creds.access_token = data.access_token
+      // persist the rotated token FIRST — losing it is unrecoverable
+      if (data.refresh_token) creds.refresh_token = data.refresh_token
+      const expiresIn = data.expires_in || 3600
+      creds.token_expires_at = new Date(Date.now() + expiresIn * 1000).toISOString()
+      writeCreds(creds)
+      log(`Token refreshed, expires at ${creds.token_expires_at}`)
+      return creds
+    } catch (err) {
+      lastErr = err
+      const status = Number((/^HTTP (\d+)/.exec(err.message) || [])[1])
+      if (status >= 400 && status < 500) throw new ReauthRequiredError(`HTTP ${status}`)
+      log(`Refresh attempt ${attempt}/${REFRESH_MAX_ATTEMPTS} failed (${err.message.slice(0, 120)})`)
+      if (attempt < REFRESH_MAX_ATTEMPTS) await sleep(2000 * attempt)
+    }
+  }
+  throw lastErr
 }
 
 async function getToken() {
@@ -422,6 +458,12 @@ async function main() {
 }
 
 main().catch(err => {
+  // A dead refresh_token is an operator-actionable incident, not routine noise: make it
+  // greppable so the freshness monitor can alert instead of the cron failing silently.
+  if (err.name === 'ReauthRequiredError') {
+    log(err.message)
+    process.exit(2)
+  }
   console.error('Sync failed:', err.message)
   process.exit(1)
 })
