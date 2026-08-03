@@ -1,19 +1,63 @@
 #!/usr/bin/env node
 // sync-whoop.js — Syncs last 7 days of WHOOP data into MongoDB
-// Run:  node /tmp/health-api/scripts/sync-whoop.js
-// Cron: node /tmp/health-api/scripts/sync-whoop.js >> /tmp/whoop-sync.log 2>&1  (every 30 min)
+// Run:  node health-api/scripts/sync-whoop.js
+// Cron: */30 * * * * . /root/.config/chuttyevo/mongo.env && node /root/chuttyevo-agent/health-api/scripts/sync-whoop.js >> /var/log/whoop-sync.log 2>&1
+//
+// ── Token-rotation strategy (3rd-time fix, 2026-08-03) ─────────────────────────
+// WHOOP refresh tokens are SINGLE-USE (Ory Hydra): the token we send dies the
+// moment WHOOP answers, and a new rotated refresh_token comes back in the
+// response. A 502 from WHOOP is catastrophic in this model — WHOOP may have
+// rotated server-side and lost the response, leaving our stored token already
+// spent. The 31.07 fix (scope=offline + blind 3× retry on 5xx) could NOT help:
+// retrying the SAME (already-spent) token yields HTTP 400 → ReauthRequiredError
+// → ~60 identical failures until a human re-authorizes interactively. This
+// version prevents that class of failure with four mechanisms:
+//   1. Pre-refresh only when <15min to expiry AND not refreshed in the last hour
+//      (was a 2-min threshold). This does NOT reduce the NUMBER of rotations:
+//      the WHOOP access_token TTL is exactly 1h and the cron runs */30, so the
+//      count is 24/day under both the old and the new logic (measured on the
+//      live log + simulated). What it buys is predictability — no needless
+//      early rotations, and the refresh lands in a known window instead of at
+//      an arbitrary 2-min edge.
+//   2. On 5xx / network error: ONE retry after a 60s pause (the Ory reuse
+//      window may still return the cached rotation). If it 5xx's again, do NOT
+//      burn more attempts — throw TransientRefreshError. The caller then tries
+//      to finish the sync on the still-valid access_token; note that with the
+//      current TTL(1h) == MIN_REFRESH_INTERVAL_MS(1h) that `!expired` branch is
+//      a RESERVE for a future cron-cadence change and is unreachable in prod
+//      today — a double 502 ends the run at exit 0 with no data and the next
+//      cron run retries fresh (freshness-check 12h is the safety net).
+//   3. On 4xx: try `refresh_token_prev` (stashed on every clean rotation) once
+//      — Ory has a short reuse window where a recently-rotated token may still
+//      return the cached response. Success → log "recovered via prev token".
+//   4. A definitive re-auth crisis (current+prev both rejected) raises a
+//      greppable WHOOP_REAUTH_REQUIRED and sends ONE dedup'd Telegram alert per
+//      24h (was ~48 identical failures/incident). WHOOP is also in
+//      scripts/data-freshness-check.ts (12h threshold) as a safety net.
+// Net effect of the fix: the blind retry of an already-spent token is gone, a
+// prev-token fallback recovers the Ory reuse window, a re-auth crisis alerts
+// once per 24h instead of ~48 times, and WHOOP data is under freshness
+// monitoring (12h) for the first time.
+// The token functions are exported with injectable deps so each branch is
+// unit-tested against a mocked HTTP layer (see src/tests/whoop-token.test.ts).
 
 const https = require('https')
 const fs = require('fs')
 const { MongoClient } = require('mongodb')
 
 const CREDS_PATH = '/root/.config/whoop/whoop.json'
-const MONGO_URL = process.env.MONGO_URL
-if (!MONGO_URL) throw new Error('MONGO_URL env var required (source /root/.config/chuttyevo/mongo.env)')
+const ENV_PATH = '/root/chuttyevo-agent/.env' // cron only sources mongo.env; read Telegram creds here
+const REAUTH_DEDUP_PATH = '/root/.config/whoop/reauth-alert.json'
 const DB_NAME = 'health_tracker'
 const WHOOP_TOKEN_URL = 'https://api.prod.whoop.com/oauth/oauth2/token'
 const WHOOP_API = 'https://api.prod.whoop.com/developer/v1'
 const WHOOP_API_V2 = 'https://api.prod.whoop.com/developer/v2'
+
+// Tunables (env-overridable — never bare literals in I/O paths, lesson 2026-07-30)
+const REFRESH_THRESHOLD_MS = Math.max(60_000, Number(process.env.WHOOP_REFRESH_THRESHOLD_MS) || 15 * 60 * 1000) // pre-refresh window
+const MIN_REFRESH_INTERVAL_MS = Math.max(0, Number(process.env.WHOOP_MIN_REFRESH_INTERVAL_MS) || 60 * 60 * 1000) // anti-churn guard
+const RETRY_5XX_PAUSE_MS = Math.max(0, Number(process.env.WHOOP_RETRY_5XX_PAUSE_MS) || 60 * 1000) // single 5xx retry pause
+const REAUTH_DEDUP_HOURS = 24
 
 function log(msg) {
   console.log(`[${new Date().toISOString()}] ${msg}`)
@@ -56,16 +100,43 @@ function httpRequest(url, opts, body) {
   })
 }
 
-// WHOOP refresh tokens are SINGLE-USE and rotated: the response carries the next
-// refresh_token, and the one we sent is dead the moment WHOOP answers. Two consequences,
-// both learned the hard way on 2026-07-30 (66 silent failures, 3 days of frozen data):
-//   1. `scope: 'offline'` is REQUIRED on the refresh call — without it WHOOP does not
-//      return a rotated refresh_token (developer.whoop.com → OAuth).
-//   2. A 5xx/network error is NOT a safe failure: WHOOP may have rotated server-side and
-//      lost the response, leaving our stored token already spent. Retry immediately —
-//      it is the only chance to land a response we can persist. A 4xx means the token is
-//      definitively dead and only an interactive re-auth recovers it, so stop and shout.
-const REFRESH_MAX_ATTEMPTS = 3
+// Read a value from the dotenv file (cron env doesn't include Telegram creds).
+function readEnvVar(key) {
+  if (process.env[key]) return process.env[key]
+  try {
+    const txt = fs.readFileSync(ENV_PATH, 'utf8')
+    const m = new RegExp(`^\\s*${key}=(.+)$`, 'm').exec(txt)
+    return m ? m[1].replace(/^["']|["']$/g, '').trim() : null
+  } catch {
+    return null
+  }
+}
+
+async function sendTelegram(text) {
+  const bot = readEnvVar('TELEGRAM_BOT_NOTIFY')
+  const chat = readEnvVar('OWNER_TELEGRAM_ID')
+  if (!bot || !chat) {
+    log('WHOOP alert: TELEGRAM_BOT_NOTIFY / OWNER_TELEGRAM_ID unavailable — alert skipped')
+    return false
+  }
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${bot}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ chat_id: chat, text }),
+    })
+    if (!res.ok) {
+      log(`WHOOP alert: Telegram HTTP ${res.status} ${await res.text()}`)
+      return false
+    }
+    return true
+  } catch (e) {
+    log(`WHOOP alert: Telegram error ${e.message}`)
+    return false
+  }
+}
+
+// ── Token errors ─────────────────────────────────────────────────────────────
 const REAUTH_MARKER = 'WHOOP_REAUTH_REQUIRED'
 
 class ReauthRequiredError extends Error {
@@ -76,53 +147,194 @@ class ReauthRequiredError extends Error {
   }
 }
 
+// Transient (5xx/network after the single retry): NOT fatal. The caller finishes
+// the sync on the still-valid access_token when possible and retries next cron.
+class TransientRefreshError extends Error {
+  constructor(detail) {
+    super(`WHOOP_REFRESH_TRANSIENT: ${detail}`)
+    this.name = 'TransientRefreshError'
+  }
+}
+
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 
-async function refreshToken(creds) {
-  log('Refreshing WHOOP token...')
-  const body = new URLSearchParams({
+// Dedup'd re-auth alert. Fires at most once per REAUTH_DEDUP_HOURS so an incident
+// produces ONE Telegram message, not ~48 (lesson 2026-07-31: 66 silent failures).
+// Writes {last_alerted_at} to REAUTH_DEDUP_PATH. Returns true if it actually sent.
+// `deps` (all optional, default to real fs/fetch): now, readFile, writeFile,
+// sendTelegram — injected so the dedup logic is unit-tested with no fs/network.
+async function alertReauthIfDue(detail, deps) {
+  const d = Object.assign({
+    now: Date.now,
+    readFile: (p) => fs.readFileSync(p, 'utf8'),
+    writeFile: (p, c) => fs.writeFileSync(p, c),
+    sendTelegram,
+  }, deps || {})
+  let lastAlert = 0
+  try {
+    const f = JSON.parse(d.readFile(REAUTH_DEDUP_PATH))
+    lastAlert = new Date(f.last_alerted_at).getTime() || 0
+  } catch {
+    /* no prior alert — fire */
+  }
+  const sinceHours = (d.now() - lastAlert) / 3_600_000
+  if (sinceHours < REAUTH_DEDUP_HOURS) {
+    log(`${REAUTH_MARKER}: ${detail} (alert suppressed — last ${sinceHours.toFixed(1)}h ago, dedup ${REAUTH_DEDUP_HOURS}h)`)
+    return false
+  }
+  const ts = new Date(d.now()).toISOString()
+  log(`${REAUTH_MARKER}: ${detail} — alerting owner (first in 24h)`)
+  const sent = await d.sendTelegram(
+    `🚨 WHOOP sync requires re-authorization\n` +
+    `Server ${ts}\n` +
+    `Reason: ${detail}\n` +
+    `Action: interactive re-auth needed (owner/Lisa).\n` +
+    `(dedup — next reminder in 24h)`
+  )
+  try {
+    d.writeFile(REAUTH_DEDUP_PATH, JSON.stringify({ last_alerted_at: ts }, null, 2))
+  } catch (e) {
+    log(`WHOOP alert: could not persist dedup file (${e.message})`)
+  }
+  return sent
+}
+
+// Apply a successful token response: update access/refresh tokens, stash the
+// just-used refresh_token as `refresh_token_prev` (fallback), set expiry +
+// refreshed-at timestamps, persist FIRST (lesson: persist the rotated token
+// before anything else can throw).
+function applyRotation(creds, resp, sentRefreshToken, deps) {
+  const write = (deps && deps.writeCreds) || writeCreds
+  const now = (deps && deps.now) || Date.now
+  creds.access_token = resp.access_token
+  if (resp.refresh_token) {
+    // Stash the token that just worked as the fallback for a future 4xx. It is
+    // already consumed by this rotation, but Ory's reuse window may still honour
+    // it briefly — best-effort recovery, not a guarantee.
+    creds.refresh_token_prev = sentRefreshToken
+    creds.refresh_token = resp.refresh_token
+  }
+  const expiresIn = resp.expires_in || 3600
+  creds.token_expires_at = new Date(now() + expiresIn * 1000).toISOString()
+  creds.token_refreshed_at = new Date(now()).toISOString()
+  write(creds)
+  return creds
+}
+
+function buildRefreshBody(refreshToken, creds) {
+  return new URLSearchParams({
     grant_type: 'refresh_token',
-    refresh_token: creds.refresh_token,
+    refresh_token: refreshToken,
     client_id: creds.client_id,
     client_secret: creds.client_secret,
     scope: 'offline',
   }).toString()
-
-  let lastErr
-  for (let attempt = 1; attempt <= REFRESH_MAX_ATTEMPTS; attempt++) {
-    try {
-      const data = await httpRequest(WHOOP_TOKEN_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Content-Length': Buffer.byteLength(body),
-        },
-      }, body)
-
-      creds.access_token = data.access_token
-      // persist the rotated token FIRST — losing it is unrecoverable
-      if (data.refresh_token) creds.refresh_token = data.refresh_token
-      const expiresIn = data.expires_in || 3600
-      creds.token_expires_at = new Date(Date.now() + expiresIn * 1000).toISOString()
-      writeCreds(creds)
-      log(`Token refreshed, expires at ${creds.token_expires_at}`)
-      return creds
-    } catch (err) {
-      lastErr = err
-      const status = Number((/^HTTP (\d+)/.exec(err.message) || [])[1])
-      if (status >= 400 && status < 500) throw new ReauthRequiredError(`HTTP ${status}`)
-      log(`Refresh attempt ${attempt}/${REFRESH_MAX_ATTEMPTS} failed (${err.message.slice(0, 120)})`)
-      if (attempt < REFRESH_MAX_ATTEMPTS) await sleep(2000 * attempt)
-    }
-  }
-  throw lastErr
 }
 
-async function getToken() {
-  let creds = readCreds()
+function postRefresh(body, deps) {
+  const httpReq = (deps && deps.httpRequest) || httpRequest
+  return httpReq(WHOOP_TOKEN_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Content-Length': Buffer.byteLength(body),
+    },
+  }, body)
+}
+
+// ── Core: refresh with single-5xx-retry + prev-token fallback + dedup alert ──
+// Exported for unit testing. `deps` injects httpRequest/readCreds/writeCreds/log/
+// sleep/alertReauthIfDue/now so tests are deterministic with no network or fs.
+async function refreshToken(credsIn, deps) {
+  const d = Object.assign({ httpRequest, readCreds, writeCreds, log, sleep, alertReauthIfDue, now: Date.now }, deps || {})
+  const creds = { ...credsIn }
+  const sentToken = creds.refresh_token
+
+  // At most two attempts on the SAME refresh_token: the first, and one retry
+  // after a 60s pause if it was a 5xx / network error (Ory may still return the
+  // cached rotation within its reuse window). A 4xx never retries the same token.
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const body = buildRefreshBody(creds.refresh_token, creds)
+    let resp
+    try {
+      resp = await postRefresh(body, d)
+    } catch (err) {
+      const status = Number((/^HTTP (\d+)/.exec(err.message) || [])[1])
+      const transient = Number.isNaN(status) || status >= 500
+      if (transient) {
+        if (attempt === 1) {
+          d.log(`Refresh attempt 1 transient (${err.message.slice(0, 80)}) — pausing ${Math.round(RETRY_5XX_PAUSE_MS / 1000)}s for one retry`)
+          await d.sleep(RETRY_5XX_PAUSE_MS)
+          continue // attempt 2, SAME refresh_token
+        }
+        throw new TransientRefreshError(`persistent ${err.message.slice(0, 80)} after retry`)
+      }
+      // 4xx: token rejected — fall through to prev-token fallback (no retry of the same token)
+      return await recoverViaPrev(creds, sentToken, `HTTP ${status}`, d)
+    }
+    // success
+    applyRotation(creds, resp, sentToken, d)
+    d.log(`Token refreshed, expires at ${creds.token_expires_at}`)
+    return creds
+  }
+  // Unreachable: the loop returns or throws on both paths above.
+  throw new TransientRefreshError('exhausted retry loop unexpectedly')
+}
+
+// 4xx handler: the current refresh_token was rejected (likely already spent by a
+// lost 502). Try `refresh_token_prev` once — Ory's reuse window may still return
+// the cached rotation. If prev also fails (or there is no prev), this is a
+// definitive re-auth crisis: alert (dedup'd) + throw ReauthRequiredError.
+async function recoverViaPrev(creds, sentToken, reason, d) {
+  const prev = creds.refresh_token_prev
+  if (!prev || prev === sentToken) {
+    await d.alertReauthIfDue(`${reason}; no prev token to fall back to`, d)
+    throw new ReauthRequiredError(`${reason}; no prev token`)
+  }
+  d.log(`Current refresh_token rejected (${reason}) — trying refresh_token_prev`)
+  const body = buildRefreshBody(prev, creds)
+  try {
+    const resp = await postRefresh(body, d)
+    applyRotation(creds, resp, prev, d)
+    d.log(`recovered via prev token, expires at ${creds.token_expires_at}`)
+    return creds
+  } catch (err) {
+    const prevStatus = Number((/^HTTP (\d+)/.exec(err.message) || [])[1])
+    const prevDesc = Number.isNaN(prevStatus) ? err.message.slice(0, 60) : `HTTP ${prevStatus}`
+    await d.alertReauthIfDue(`current ${reason}; prev ${prevDesc}`, d)
+    throw new ReauthRequiredError(`current ${reason}; prev ${prevDesc}`)
+  }
+}
+
+// Decide whether to refresh, then return a usable access_token.
+//   - token expired                       → must refresh (ignore anti-churn guard)
+//   - within REFRESH_THRESHOLD_MS + not churn → pre-refresh
+//   - transient refresh failure + token still valid → continue on current token
+//   - transient refresh failure + token expired    → propagate (main exits gracefully)
+async function getToken(deps) {
+  const d = Object.assign({ readCreds, refreshToken, log, now: Date.now }, deps || {})
+  const creds = d.readCreds()
+  const now = d.now()
   const expiresAt = new Date(creds.token_expires_at).getTime()
-  if (Date.now() > expiresAt - 120000) {
-    creds = await refreshToken(creds)
+  const lastRefresh = creds.token_refreshed_at ? new Date(creds.token_refreshed_at).getTime() : 0
+  const expired = now >= expiresAt
+  const withinThreshold = now > expiresAt - REFRESH_THRESHOLD_MS
+  const tooSoon = (now - lastRefresh) < MIN_REFRESH_INTERVAL_MS
+
+  if (expired || (withinThreshold && !tooSoon)) {
+    try {
+      return (await d.refreshToken(creds, d)).access_token
+    } catch (e) {
+      if (e instanceof TransientRefreshError) {
+        if (!expired) {
+          const minsLeft = Math.max(0, Math.round((expiresAt - now) / 60000))
+          d.log(`${e.message} — continuing sync on current access_token (valid ~${minsLeft}min); retry next cron`)
+          return creds.access_token
+        }
+        // expired + transient: cannot continue. Propagate; main() exits 0 (retry next cron).
+      }
+      throw e
+    }
   }
   return creds.access_token
 }
@@ -171,12 +383,10 @@ async function syncDate(db, token, dateStr) {
       const doc = {
         date: dateStr,
         cycle_id: String(c.id),
-        // timestamps
         start: c.start ?? null,
         end: c.end ?? null,
         timezone_offset: c.timezone_offset ?? null,
         score_state: c.score_state ?? null,
-        // scores
         strain: c.score?.strain ?? null,
         kilojoule: c.score?.kilojoule ?? null,
         calories_burned: kcal,
@@ -209,7 +419,6 @@ async function syncDate(db, token, dateStr) {
         sleep_id: r.sleep_id ?? null,
         score_state: r.score_state ?? null,
         user_calibrating: r.score?.user_calibrating ?? null,
-        // all score fields
         recovery_score: r.score?.recovery_score ?? null,
         resting_heart_rate: r.score?.resting_heart_rate ?? null,
         hrv_rmssd: r.score?.hrv_rmssd_milli ?? null,
@@ -217,8 +426,6 @@ async function syncDate(db, token, dateStr) {
         skin_temp_celsius: r.score?.skin_temp_celsius ?? null,
         synced_at: now,
       }
-      // Only overwrite score fields if we have actual score data.
-      // Prevents a PENDING_SLEEP sync from nulling out previously valid recovery scores.
       const RECOVERY_SCORE_FIELDS = ['recovery_score', 'resting_heart_rate', 'hrv_rmssd', 'spo2_percentage', 'skin_temp_celsius']
       const hasRecoveryScores = RECOVERY_SCORE_FIELDS.some(f => doc[f] !== null)
       const recoverySetDoc = hasRecoveryScores
@@ -260,7 +467,6 @@ async function syncDate(db, token, dateStr) {
         timezone_offset: s.timezone_offset ?? null,
         score_state: s.score_state ?? null,
         nap: s.nap ?? false,
-        // stage breakdown (ms)
         total_in_bed_ms: totalInBedMs,
         total_awake_ms: stages.total_awake_time_milli ?? null,
         total_light_sleep_ms: stages.total_light_sleep_time_milli ?? null,
@@ -268,20 +474,16 @@ async function syncDate(db, token, dateStr) {
         total_rem_ms: stages.total_rem_sleep_time_milli ?? null,
         sleep_cycle_count: stages.sleep_cycle_count ?? null,
         disturbance_count: stages.disturbance_count ?? null,
-        // computed
         total_sleep_ms: totalSleepMs,
         sleep_hours: sleepHours,
         sleep_needed_ms: sleepNeededMs,
         sleep_needed_hours: sleepNeededMs ? Math.round((sleepNeededMs / 3600000) * 10) / 10 : null,
-        // scores
         respiratory_rate: s.score?.respiratory_rate ?? null,
         sleep_performance: s.score?.sleep_performance_percentage ?? null,
         sleep_consistency: s.score?.sleep_consistency_percentage ?? null,
         sleep_efficiency: s.score?.sleep_efficiency_percentage ?? null,
         synced_at: now,
       }
-      // Only overwrite score fields if we have actual score data.
-      // Prevents an incomplete sleep sync from nulling out valid stage/score data.
       const SLEEP_SCORE_FIELDS = ['sleep_hours', 'sleep_needed_hours', 'sleep_needed_ms', 'total_sleep_ms',
         'total_in_bed_ms', 'total_awake_ms', 'total_light_sleep_ms', 'total_sws_ms', 'total_rem_ms',
         'disturbance_count', 'respiratory_rate', 'sleep_performance', 'sleep_consistency', 'sleep_efficiency']
@@ -306,7 +508,7 @@ async function syncDate(db, token, dateStr) {
       `/activity/workout?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`, true)
     const wkts = wResp?.records || []
     for (const w of wkts) {
-      const kcal = w.score?.kilojoule ? Math.round(w.score.kilojoule / 4.184) : null
+      const kcal = w.score?.kilojoule ? Math.round(w.score?.kilojoule / 4.184) : null
       const durationMin = w.end && w.start
         ? Math.round((new Date(w.end) - new Date(w.start)) / 60000) : null
       const zones = w.score?.zone_durations ?? {}
@@ -320,7 +522,6 @@ async function syncDate(db, token, dateStr) {
         timezone_offset: w.timezone_offset ?? null,
         score_state: w.score_state ?? null,
         duration_min: durationMin,
-        // scores
         strain: w.score?.strain ?? null,
         kilojoule: w.score?.kilojoule ?? null,
         calories_burned: kcal,
@@ -329,7 +530,6 @@ async function syncDate(db, token, dateStr) {
         percent_recorded: w.score?.percent_recorded ?? null,
         distance_meter: w.score?.distance_meter ?? null,
         altitude_gain_meter: w.score?.altitude_gain_meter ?? null,
-        // heart rate zones (ms)
         zone_zero_ms: zones.zone_zero_milli ?? null,
         zone_one_ms: zones.zone_one_milli ?? null,
         zone_two_ms: zones.zone_two_milli ?? null,
@@ -393,12 +593,13 @@ async function syncDate(db, token, dateStr) {
 }
 
 async function main() {
-  const client = new MongoClient(MONGO_URL)
+  const mongoUrl = process.env.MONGO_URL
+  if (!mongoUrl) throw new Error('MONGO_URL env var required (source /root/.config/chuttyevo/mongo.env)')
+  const client = new MongoClient(mongoUrl)
   await client.connect()
   const db = client.db(DB_NAME)
   log('Connected to MongoDB')
 
-  // Ensure indexes
   await db.collection('whoop_cycles').createIndex({ date: 1 }, { unique: true }).catch(() => {})
   await db.collection('whoop_recovery').createIndex({ date: 1 }, { unique: true }).catch(() => {})
   await db.collection('whoop_sleep').createIndex({ sleep_id: 1 }, { unique: true, sparse: true }).catch(() => {})
@@ -407,7 +608,6 @@ async function main() {
 
   const token = await getToken()
 
-  // Sync last N days (default 7, override with --days=30 arg)
   const daysArg = process.argv.find(a => a.startsWith('--days='))
   const DAYS = daysArg ? parseInt(daysArg.split('=')[1]) : 7
   const today = new Date()
@@ -457,13 +657,22 @@ async function main() {
   log('WHOOP sync complete.')
 }
 
-main().catch(err => {
-  // A dead refresh_token is an operator-actionable incident, not routine noise: make it
-  // greppable so the freshness monitor can alert instead of the cron failing silently.
-  if (err.name === 'ReauthRequiredError') {
-    log(err.message)
-    process.exit(2)
-  }
-  console.error('Sync failed:', err.message)
-  process.exit(1)
-})
+// Export the token layer for unit tests (see src/tests/whoop-token.test.ts).
+module.exports = { refreshToken, getToken, alertReauthIfDue, ReauthRequiredError, TransientRefreshError,
+  REFRESH_THRESHOLD_MS, MIN_REFRESH_INTERVAL_MS, REAUTH_DEDUP_HOURS }
+
+// Run only when invoked directly, not when required by a test.
+if (require.main === module) {
+  main().catch(err => {
+    if (err.name === 'ReauthRequiredError') {
+      log(err.message)
+      process.exit(2)
+    }
+    if (err.name === 'TransientRefreshError') {
+      log(`${err.message} — token expired and refresh transient; will retry next cron run (freshness-check 12h safety net).`)
+      process.exit(0) // not an error state — next cron retries, freshness-monitor catches prolonged outages
+    }
+    console.error('Sync failed:', err.message)
+    process.exit(1)
+  })
+}
