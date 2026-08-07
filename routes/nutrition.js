@@ -321,6 +321,7 @@ module.exports = function (getDB) {
         fat_per_100g: f.fat_per_100g,
         carbs_per_100g: f.carbs_per_100g,
         sugar_per_100g: f.sugar_per_100g || 0,
+        fiber_per_100g: f.fiber_per_100g || 0,
         source: 'library',
       }))
 
@@ -343,6 +344,7 @@ module.exports = function (getDB) {
           const actualFat = Math.round(food.fat_per_100g * amount / 100 * 10) / 10
           const actualCarbs = Math.round(food.carbs_per_100g * amount / 100 * 10) / 10
           const actualSugar = Math.round((food.sugar_per_100g || 0) * amount / 100 * 10) / 10
+          const actualFiber = Math.round((food.fiber_per_100g || 0) * amount / 100 * 10) / 10
 
           // Macro fit score (weighted: protein matters most for this user)
           const proteinDev = targetProtein > 0 ? Math.abs(actualProtein - targetProtein) / targetProtein : 0
@@ -359,6 +361,8 @@ module.exports = function (getDB) {
             protein_g: actualProtein,
             fat_g: actualFat,
             carbs_g: actualCarbs,
+            sugar_g: actualSugar,
+            fiber_g: actualFiber,
             fit_score,
             source: food.source,
           }
