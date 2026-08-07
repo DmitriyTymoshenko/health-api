@@ -11,8 +11,17 @@ const PORT = 3001
 const MONGO_URL = process.env.MONGO_URL || 'mongodb://localhost:27017'
 const DB_NAME = 'health_tracker'
 
+// #872 Finding #1: default express.json() body limit is 100kb. A real phone photo is 2-5MB, and
+// base64-encoding it (as PhotoRecognize.jsx does before POSTing to /api/nutrition/recognize)
+// inflates that by ~4/3 — so EVERY real-world photo was rejected with a raw 413 before reaching
+// any route handler (a mini-thumbnail was the only thing that ever worked). Raised for all
+// routes (single-owner tool, not a public API) rather than scoped per-route, because
+// express.json() runs once at the app level before routing and a route-scoped override would
+// re-read an already-consumed stream. Env-overridable so it can be tuned without a code change.
+const JSON_BODY_LIMIT = process.env.HEALTH_API_JSON_LIMIT || '10mb'
+
 app.use(cors())
-app.use(express.json())
+app.use(express.json({ limit: JSON_BODY_LIMIT }))
 
 let db
 
@@ -299,15 +308,39 @@ app.get('/api/version', (req, res) => res.json({
   uptime: Math.floor(process.uptime())
 }))
 
-// Start
-connectDB()
-  .then(async () => {
-    await seedData()
-    app.listen(PORT, () => {
-      console.log(`Health API running on http://localhost:${PORT}`)
+// #872 Finding #1: express's default 413 response for an over-limit body is HTML
+// ("PayloadTooLargeError: request entity too large<br> &nbsp; &nbsp;at ..."), not JSON — so
+// `await res.json()` in the frontend threw "Unexpected token" instead of showing the real
+// reason. body-parser errors (thrown by express.json() before any route handler runs) land here.
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  if (err && err.type === 'entity.too.large') {
+    return res.status(413).json({
+      error: 'Payload too large',
+      hint: `File exceeds the ${JSON_BODY_LIMIT} request limit`,
     })
-  })
-  .catch((err) => {
-    console.error('Failed to connect to MongoDB:', err)
-    process.exit(1)
-  })
+  }
+  if (err && err.type === 'entity.parse.failed') {
+    return res.status(400).json({ error: 'Invalid JSON body' })
+  }
+  console.error('[server] unhandled error:', err?.message || err)
+  res.status(500).json({ error: 'Internal server error' })
+})
+
+// Start (skip when required as a module, e.g. by tests via supertest — see
+// src/tests/server_body_limit.test.ts)
+if (require.main === module) {
+  connectDB()
+    .then(async () => {
+      await seedData()
+      app.listen(PORT, () => {
+        console.log(`Health API running on http://localhost:${PORT}`)
+      })
+    })
+    .catch((err) => {
+      console.error('Failed to connect to MongoDB:', err)
+      process.exit(1)
+    })
+}
+
+module.exports = app
