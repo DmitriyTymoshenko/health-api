@@ -1,5 +1,6 @@
 const { Router } = require('express')
 const https = require('https')
+const { resolveDayKcalTarget, satFatLimitG, satFatStatus } = require('../lib/nutrition-targets')
 
 const TELEGRAM_BOT_TOKEN = '' // notifications disabled per user request
 const TELEGRAM_OWNER_ID = process.env.OWNER_TELEGRAM_ID || '455440443'
@@ -212,9 +213,12 @@ module.exports = function (getDB) {
           acc.fat_g += item.fat_g || 0
           acc.fiber_g += item.fiber_g || 0
           acc.sugar_g += item.sugar_g || 0
+          acc.sat_fat_g += item.sat_fat_g || 0
+          // incompleteness: any item lacking sat_fat_g means the day's sat_fat total is underestimated
+          if (item.sat_fat_g == null) acc.sat_fat_incomplete = true
           return acc
         },
-        { date: today, kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0, sugar_g: 0, items: data.length }
+        { date: today, kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0, sugar_g: 0, sat_fat_g: 0, sat_fat_incomplete: false, items: data.length }
       )
 
       // Round to 1 decimal
@@ -224,6 +228,16 @@ module.exports = function (getDB) {
       summary.fat_g = Math.round(summary.fat_g * 10) / 10
       summary.fiber_g = Math.round(summary.fiber_g * 10) / 10
       summary.sugar_g = Math.round(summary.sugar_g * 10) / 10
+      summary.sat_fat_g = Math.round(summary.sat_fat_g * 10) / 10
+
+      // Saturated-fat DAILY LIMIT (Koliada norm: ≤10% of calories; 9 kcal/g).
+      // Math lives in lib/nutrition-targets.js — the SAME helper recommendations.js
+      // uses, so the limit can never drift between the two surfaces (BASE RULE).
+      const profile = await db.collection('personal_profile').findOne({ _type: 'profile' })
+      const whoopCycle = await db.collection('whoop_cycles').findOne({ date: today })
+      const dayKcalTarget = resolveDayKcalTarget(profile, whoopCycle?.calories_burned)
+      summary.sat_fat_goal_g = satFatLimitG(dayKcalTarget)
+      summary.sat_fat_status = satFatStatus(summary.sat_fat_g, summary.sat_fat_goal_g)
 
       res.json(summary)
     } catch (err) {
@@ -242,6 +256,7 @@ module.exports = function (getDB) {
       if (doc.protein !== undefined && doc.protein_g === undefined) doc.protein_g = doc.protein
       if (doc.fat !== undefined && doc.fat_g === undefined) doc.fat_g = doc.fat
       if (doc.carbs !== undefined && doc.carbs_g === undefined) doc.carbs_g = doc.carbs
+      if (doc.sat_fat !== undefined && doc.sat_fat_g === undefined) doc.sat_fat_g = doc.sat_fat
       if (doc.name && !doc.food_name) doc.food_name = doc.name
 
       const result = await db.collection('nutrition_log').insertOne(doc)

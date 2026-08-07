@@ -3,7 +3,7 @@ const { Router } = require('express')
 /**
  * Meal Templates
  * Collection: meal_templates
- * Schema: { name, items: [{food_name, amount_g, meal_type, kcal, protein_g, fat_g, carbs_g, fiber_g}], created_at }
+ * Schema: { name, items: [{food_name, amount_g, meal_type, kcal, protein_g, fat_g, carbs_g, fiber_g, sat_fat_g}], created_at }
  */
 
 module.exports = function (getDB) {
@@ -84,6 +84,7 @@ module.exports = function (getDB) {
         carbs_g: item.carbs_g || 0,
         fiber_g: item.fiber_g || 0,
         sugar_g: item.sugar_g || 0,
+        sat_fat_g: item.sat_fat_g || 0,
         from_template: template.name,
         created_at: new Date(),
       }))

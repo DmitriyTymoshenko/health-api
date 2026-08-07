@@ -1,4 +1,5 @@
 const { Router } = require('express')
+const { resolveDayKcalTarget, satFatLimitG, satFatStatus } = require('../lib/nutrition-targets')
 
 // High-protein suggestions pool
 const HIGH_PROTEIN_POOL = [
@@ -251,21 +252,16 @@ module.exports = function (getDB) {
       const deficitGoal = profile?.deficit_kcal || 500
 
       // Calculate targets
-      const tdee = profile.tdee_kcal || 2429
-      const deficit = profile.deficit_kcal || 500
-
       // Dynamic calorie target: burned - deficit (if WHOOP data exists)
-      // Fall back to profile target if no WHOOP data
-      let targetCalories
-      if (caloriesBurned && caloriesBurned > 1200) {
-        targetCalories = Math.round(caloriesBurned - deficitGoal)
-      } else {
-        targetCalories = profile?.daily_kcal_goal || (tdee - deficit)
-      }
+      // Fall back to profile target if no WHOOP data.
+      // Shared helper — GET /api/nutrition/summary derives the SAME target (BASE RULE).
+      const targetCalories = resolveDayKcalTarget(profile, caloriesBurned)
       const targetProtein = profile.daily_protein_goal_g || 150
       // Macro split: 33% protein, 40% carbs, 27% fat
       const targetCarbs = Math.round(targetCalories * 0.407 / 4)
       const targetFat = Math.round(targetCalories * 0.266 / 9)
+      // Saturated fat is a CEILING, not a goal: ≤10% of the day's calories.
+      const targetSatFat = satFatLimitG(targetCalories)
 
       // 3. Calculate consumed totals
       const consumed = nutritionEntries.reduce(
@@ -274,9 +270,13 @@ module.exports = function (getDB) {
           acc.protein += entry.protein_g || 0
           acc.carbs += entry.carbs_g || 0
           acc.fat += entry.fat_g || 0
+          // Historical entries predate sat_fat_g — fall back to 0 and flag the day
+          // as incomplete so the UI never presents an understated total as a fact.
+          acc.sat_fat += entry.sat_fat_g || 0
+          if (entry.sat_fat_g == null) acc.sat_fat_incomplete = true
           return acc
         },
-        { calories: 0, protein: 0, carbs: 0, fat: 0 }
+        { calories: 0, protein: 0, carbs: 0, fat: 0, sat_fat: 0, sat_fat_incomplete: false }
       )
 
       // 4. Calculate gaps
@@ -491,6 +491,11 @@ module.exports = function (getDB) {
           fat_consumed: Math.round(consumed.fat),
           fat_target: targetFat,
           fat_remaining: Math.round(remainingFat),
+          sat_fat_consumed: Math.round(consumed.sat_fat * 10) / 10,
+          sat_fat_limit: targetSatFat,
+          sat_fat_remaining: Math.round(Math.max(0, targetSatFat - consumed.sat_fat) * 10) / 10,
+          sat_fat_status: satFatStatus(consumed.sat_fat, targetSatFat),
+          sat_fat_incomplete: consumed.sat_fat_incomplete,
         },
         meals,
         meal_plan,

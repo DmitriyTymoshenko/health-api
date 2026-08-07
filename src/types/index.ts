@@ -11,6 +11,7 @@ export interface NutritionEntry {
   fat_g: number
   carbs_g: number
   fiber_g?: number
+  sat_fat_g?: number
   amount_g?: number
   created_at?: Date
 }
@@ -29,6 +30,7 @@ export interface NutritionInput {
   fat?: number
   carbs?: number
   fiber_g?: number
+  sat_fat_g?: number
   amount_g?: number
 }
 

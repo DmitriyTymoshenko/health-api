@@ -4,7 +4,7 @@ const https = require('https')
 /**
  * POST /api/nutrition/recognize
  * Body: { image: "<base64 string>", mediaType: "image/jpeg" (optional) }
- * Returns: [{ food_name, amount_g, kcal, protein_g, fat_g, carbs_g, sugar_g, fiber_g }]
+ * Returns: [{ food_name, amount_g, kcal, protein_g, fat_g, carbs_g, sugar_g, fiber_g, sat_fat_g }]
  *
  * Uses Claude claude-3-5-haiku-20241022 vision. Requires ANTHROPIC_API_KEY env var.
  */
@@ -34,9 +34,10 @@ For each item provide a JSON array with objects having these exact keys:
 - carbs_g: number
 - sugar_g: number
 - fiber_g: number
+- sat_fat_g: number (saturated fat grams; estimate from food composition if unknown)
 
 Return ONLY a valid JSON array, no markdown, no explanation. Example:
-[{"food_name":"Chicken breast","amount_g":150,"kcal":248,"protein_g":46,"fat_g":5,"carbs_g":0,"sugar_g":0,"fiber_g":0}]
+[{"food_name":"Chicken breast","amount_g":150,"kcal":248,"protein_g":46,"fat_g":5,"carbs_g":0,"sugar_g":0,"fiber_g":0,"sat_fat_g":1.5}]
 
 If you cannot identify food in the image, return an empty array: []`
 
@@ -106,6 +107,7 @@ If you cannot identify food in the image, return an empty array: []`
         carbs_g:   +(Number(item.carbs_g || 0).toFixed(1)),
         sugar_g:   +(Number(item.sugar_g || 0).toFixed(1)),
         fiber_g:   +(Number(item.fiber_g || 0).toFixed(1)),
+        sat_fat_g: +(Number(item.sat_fat_g || 0).toFixed(1)),
       }))
 
       res.json(safe)

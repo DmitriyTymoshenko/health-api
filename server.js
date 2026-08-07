@@ -90,6 +90,7 @@ async function seedData() {
                   carbs_g: meal.carbs || 0,
                   fat_g: meal.fat || 0,
                   fiber_g: meal.fiber || 0,
+                  sat_fat_g: meal.sat_fat || 0,
                 }
               },
               { upsert: true }
