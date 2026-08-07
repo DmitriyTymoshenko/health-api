@@ -1,6 +1,6 @@
 const { Router } = require('express')
 const https = require('https')
-const { resolveDayKcalTarget, satFatLimitG, satFatStatus } = require('../lib/nutrition-targets')
+const { satFatLimitBasisKcal, satFatLimitG, satFatStatus } = require('../lib/nutrition-targets')
 
 const TELEGRAM_BOT_TOKEN = '' // notifications disabled per user request
 const TELEGRAM_OWNER_ID = process.env.OWNER_TELEGRAM_ID || '455440443'
@@ -233,10 +233,9 @@ module.exports = function (getDB) {
       // Saturated-fat DAILY LIMIT (Koliada norm: ≤10% of calories; 9 kcal/g).
       // Math lives in lib/nutrition-targets.js — the SAME helper recommendations.js
       // uses, so the limit can never drift between the two surfaces (BASE RULE).
+      // Basis is the STABLE profile target, never the intraday WHOOP burn.
       const profile = await db.collection('personal_profile').findOne({ _type: 'profile' })
-      const whoopCycle = await db.collection('whoop_cycles').findOne({ date: today })
-      const dayKcalTarget = resolveDayKcalTarget(profile, whoopCycle?.calories_burned)
-      summary.sat_fat_goal_g = satFatLimitG(dayKcalTarget)
+      summary.sat_fat_goal_g = satFatLimitG(satFatLimitBasisKcal(profile))
       summary.sat_fat_status = satFatStatus(summary.sat_fat_g, summary.sat_fat_goal_g)
 
       res.json(summary)

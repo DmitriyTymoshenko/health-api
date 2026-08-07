@@ -8,10 +8,37 @@
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const {
   resolveDayKcalTarget,
+  satFatLimitBasisKcal,
   satFatLimitG,
   satFatStatus,
   SAT_FAT_KCAL_SHARE,
 } = require('../../lib/nutrition-targets')
+
+describe('satFatLimitBasisKcal — the ceiling must NOT move during the day', () => {
+  const profile = { tdee_kcal: 2429, deficit_kcal: 500 }
+
+  it('ignores the WHOOP burn entirely (regression: 2026-08-07 12:07 gave a 12 g ceiling)', () => {
+    // Live data that day: burn 1579 at noon, 2366 the completed day before.
+    // resolveDayKcalTarget would swing 1079 -> 1866; the ceiling must not.
+    expect(resolveDayKcalTarget(profile, 1579)).toBe(1079) // characterises the calorie target
+    expect(satFatLimitBasisKcal(profile)).toBe(1929) // ceiling basis: unchanged
+    expect(satFatLimitG(satFatLimitBasisKcal(profile))).toBe(21)
+  })
+
+  it('is identical at every hour of the day', () => {
+    const hours = [0, 900, 1579, 2366, 2934]
+    const limits = hours.map(() => satFatLimitG(satFatLimitBasisKcal(profile)))
+    expect(new Set(limits).size).toBe(1)
+  })
+
+  it('honours an explicit profile goal', () => {
+    expect(satFatLimitBasisKcal({ daily_kcal_goal: 2200 })).toBe(2200)
+  })
+
+  it('survives a missing profile', () => {
+    expect(satFatLimitBasisKcal(null)).toBe(1929)
+  })
+})
 
 describe('satFatLimitG — ≤10% of daily calories, 9 kcal/g', () => {
   it.each([
