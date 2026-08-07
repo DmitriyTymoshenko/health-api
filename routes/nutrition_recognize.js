@@ -18,9 +18,13 @@ const { Router } = require('express')
 
 const GEMINI_MODEL = process.env.GEMINI_VISION_MODEL || 'gemini-2.5-flash'
 // Same floor/clamp rationale as src/gemini-vision.ts (#863, 2026-07-30/08-03): a bad env override
-// must degrade to "small but usable", never invert into a hard 400.
+// must degrade to "small but usable", never invert into a hard 400. Default raised 2000->4000
+// after a live test hit finishReason=MAX_TOKENS with content.parts=[] on the first real photo —
+// gemini-2.5-flash burns thinking tokens against this same budget before it emits the JSON array,
+// the exact #863 mechanism. thinkingBudget: 0 below removes the root cause (this call needs no
+// chain-of-thought, only structured extraction); the raised floor stays as defense in depth.
 const MIN_OUTPUT_TOKENS = 512
-const MAX_OUTPUT_TOKENS = Math.max(MIN_OUTPUT_TOKENS, Number(process.env.GEMINI_VISION_MAX_TOKENS) || 2000)
+const MAX_OUTPUT_TOKENS = Math.max(MIN_OUTPUT_TOKENS, Number(process.env.GEMINI_VISION_MAX_TOKENS) || 4000)
 
 const PROMPT = `You are a nutrition expert. Analyze this food photo and identify EVERY food item visible on the plate — main dish, side, sauce, drink, bread, garnish. Do not skip any item.
 
@@ -130,6 +134,10 @@ module.exports = function (_getDB) {
         maxOutputTokens: MAX_OUTPUT_TOKENS,
         responseMimeType: 'application/json',
         responseSchema: RESPONSE_SCHEMA,
+        // This is structured extraction against a fixed schema, not reasoning — no chain-of-
+        // thought needed. Disabling it stops thinking tokens from eating MAX_OUTPUT_TOKENS
+        // before the model emits the JSON array (root cause of the MAX_TOKENS hit above).
+        thinkingConfig: { thinkingBudget: 0 },
       },
     })
 
