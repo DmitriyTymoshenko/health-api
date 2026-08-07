@@ -314,16 +314,21 @@ module.exports = function (getDB) {
 
       // Fetch library foods
       const libraryFoods = await db.collection('foods_library').find({}).toArray()
-      const libraryNormalized = libraryFoods.map(f => ({
-        name: f.name,
-        kcal_per_100g: f.kcal_per_100g,
-        protein_per_100g: f.protein_per_100g,
-        fat_per_100g: f.fat_per_100g,
-        carbs_per_100g: f.carbs_per_100g,
-        sugar_per_100g: f.sugar_per_100g || 0,
-        fiber_per_100g: f.fiber_per_100g || 0,
-        source: 'library',
-      }))
+      // #926: a foods_library doc can be missing `name` (a partial/broken write — 1 of 172 docs
+      // in prod as of 2026-08-07, use_count:0, not a systemic writer bug). Drop such docs before
+      // any .toLowerCase()/dedup logic below, instead of crashing the whole endpoint on one bad row.
+      const libraryNormalized = libraryFoods
+        .filter(f => typeof f?.name === 'string' && f.name.trim())
+        .map(f => ({
+          name: f.name,
+          kcal_per_100g: f.kcal_per_100g,
+          protein_per_100g: f.protein_per_100g,
+          fat_per_100g: f.fat_per_100g,
+          carbs_per_100g: f.carbs_per_100g,
+          sugar_per_100g: f.sugar_per_100g || 0,
+          fiber_per_100g: f.fiber_per_100g || 0,
+          source: 'library',
+        }))
 
       // Always merge library + COMMON_FOODS, dedup by name (library takes priority)
       const existingNames = new Set(libraryNormalized.map(f => f.name.toLowerCase()))
