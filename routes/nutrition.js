@@ -1,6 +1,12 @@
 const { Router } = require('express')
 const https = require('https')
-const { satFatLimitBasisKcal, satFatLimitG, satFatStatus } = require('../lib/nutrition-targets')
+const {
+  stableDayKcalBasis,
+  satFatLimitG,
+  satFatStatus,
+  sugarLimitG,
+  sugarStatus,
+} = require('../lib/nutrition-targets')
 
 const TELEGRAM_BOT_TOKEN = '' // notifications disabled per user request
 const TELEGRAM_OWNER_ID = process.env.OWNER_TELEGRAM_ID || '455440443'
@@ -216,9 +222,13 @@ module.exports = function (getDB) {
           acc.sat_fat_g += item.sat_fat_g || 0
           // incompleteness: any item lacking sat_fat_g means the day's sat_fat total is underestimated
           if (item.sat_fat_g == null) acc.sat_fat_incomplete = true
+          // same for sugar: an entry logged before sugar was tracked drags the day's
+          // total DOWN, which would render a green 'ok' on a day that actually breached
+          // the ceiling — the exact case the metric exists for.
+          if (item.sugar_g == null) acc.sugar_incomplete = true
           return acc
         },
-        { date: today, kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0, sugar_g: 0, sat_fat_g: 0, sat_fat_incomplete: false, items: data.length }
+        { date: today, kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0, sugar_g: 0, sat_fat_g: 0, sat_fat_incomplete: false, sugar_incomplete: false, items: data.length }
       )
 
       // Round to 1 decimal
@@ -230,13 +240,17 @@ module.exports = function (getDB) {
       summary.sugar_g = Math.round(summary.sugar_g * 10) / 10
       summary.sat_fat_g = Math.round(summary.sat_fat_g * 10) / 10
 
-      // Saturated-fat DAILY LIMIT (Koliada norm: ≤10% of calories; 9 kcal/g).
+      // DAILY CEILINGS — saturated fat (Koliada norm: ≤10% of calories; 9 kcal/g)
+      // and sugar (WHO: ≤10% of calories; 4 kcal/g).
       // Math lives in lib/nutrition-targets.js — the SAME helper recommendations.js
-      // uses, so the limit can never drift between the two surfaces (BASE RULE).
+      // uses, so a limit can never drift between the two surfaces (BASE RULE).
       // Basis is the STABLE profile target, never the intraday WHOOP burn.
       const profile = await db.collection('personal_profile').findOne({ _type: 'profile' })
-      summary.sat_fat_goal_g = satFatLimitG(satFatLimitBasisKcal(profile))
+      const kcalBasis = stableDayKcalBasis(profile)
+      summary.sat_fat_goal_g = satFatLimitG(kcalBasis)
       summary.sat_fat_status = satFatStatus(summary.sat_fat_g, summary.sat_fat_goal_g)
+      summary.sugar_goal_g = sugarLimitG(kcalBasis)
+      summary.sugar_status = sugarStatus(summary.sugar_g, summary.sugar_goal_g)
 
       res.json(summary)
     } catch (err) {

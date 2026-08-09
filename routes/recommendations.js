@@ -1,5 +1,5 @@
 const { Router } = require('express')
-const { resolveDayKcalTarget, satFatLimitBasisKcal, satFatLimitG, satFatStatus } = require('../lib/nutrition-targets')
+const { resolveDayKcalTarget, stableDayKcalBasis, satFatLimitG, satFatStatus } = require('../lib/nutrition-targets')
 
 // High-protein suggestions pool
 const HIGH_PROTEIN_POOL = [
@@ -261,7 +261,7 @@ module.exports = function (getDB) {
       const targetCarbs = Math.round(targetCalories * 0.407 / 4)
       const targetFat = Math.round(targetCalories * 0.266 / 9)
       // Saturated fat is a CEILING, not a goal: ≤10% of the day's calories.
-      const targetSatFat = satFatLimitG(satFatLimitBasisKcal(profile))
+      const targetSatFat = satFatLimitG(stableDayKcalBasis(profile))
 
       // 3. Calculate consumed totals
       const consumed = nutritionEntries.reduce(
