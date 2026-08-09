@@ -1,6 +1,7 @@
 const { Router } = require('express')
 const https = require('https')
 const {
+  resolveDayKcalTarget,
   stableDayKcalBasis,
   satFatLimitG,
   satFatStatus,
@@ -78,18 +79,7 @@ async function sendMealTelegramNotification(db, doc) {
       { kcal: 0, protein_g: 0, fat_g: 0, carbs_g: 0 }
     )
 
-    // Get profile targets
-    const DEFAULT_KCAL = 1929
-    let kcalTarget = DEFAULT_KCAL
-
     const profile = await db.collection('personal_profile').findOne({ _type: 'profile' })
-    if (profile) {
-      if (profile.daily_kcal_goal) {
-        kcalTarget = profile.daily_kcal_goal
-      } else if (profile.tdee_kcal && profile.deficit_kcal) {
-        kcalTarget = profile.tdee_kcal - profile.deficit_kcal
-      }
-    }
 
     // Protein target: SINGLE SOURCE via resolveProteinGoalG (#961) — no more local
     // 150 g constant. Honours an explicit profile.daily_protein_goal_g override;
@@ -98,13 +88,17 @@ async function sendMealTelegramNotification(db, doc) {
     const weightKg = resolveWeightKg(profile, latestWeightEntry?.weight_kg)
     const proteinTarget = resolveProteinGoalG(profile, weightKg) || 150 // last-resort guard: no weight data anywhere (fresh/empty DB) — avoid a divide-by-zero progress bar below
 
-    // Also check WHOOP for dynamic calorie target
     const whoopCycle = await db.collection('whoop_cycles').findOne({ date: today })
     const caloriesBurned = whoopCycle?.calories_burned
-    const deficitGoal = profile?.deficit_kcal || 500
-    if (caloriesBurned && caloriesBurned > 1200) {
-      kcalTarget = Math.round(caloriesBurned - deficitGoal)
-    }
+
+    // Calorie target: SINGLE SOURCE via resolveDayKcalTarget (#968) — this digest used
+    // to re-derive it locally (`DEFAULT_KCAL = 1929`, `tdee - deficit`, `burned - deficit`),
+    // which carried TWO copies of the `|| 500` class defect: `profile.deficit_kcal` falsy
+    // ALSO made the `tdee_kcal && deficit_kcal` guard fail, so a maintenance profile
+    // (deficit 0) silently fell all the way back to the 1929 literal. The helper is
+    // goal-aware, so the digest now follows primary_goal like every other surface
+    // (BASE RULE: one metric = one definition = one source).
+    const kcalTarget = resolveDayKcalTarget(profile, caloriesBurned)
 
     const kcalPct = Math.round((totals.kcal / kcalTarget) * 100)
     const proteinPct = Math.round((totals.protein_g / proteinTarget) * 100)
