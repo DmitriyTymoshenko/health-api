@@ -56,7 +56,10 @@ const WHOOP_API_V2 = 'https://api.prod.whoop.com/developer/v2'
 // Tunables (env-overridable — never bare literals in I/O paths, lesson 2026-07-30)
 const REFRESH_THRESHOLD_MS = Math.max(60_000, Number(process.env.WHOOP_REFRESH_THRESHOLD_MS) || 15 * 60 * 1000) // pre-refresh window
 const MIN_REFRESH_INTERVAL_MS = Math.max(0, Number(process.env.WHOOP_MIN_REFRESH_INTERVAL_MS) || 60 * 60 * 1000) // anti-churn guard
-const RETRY_5XX_PAUSE_MS = Math.max(0, Number(process.env.WHOOP_RETRY_5XX_PAUSE_MS) || 60 * 1000) // single 5xx retry pause
+// #904/C2: was 60s — a guaranteed miss of Ory's reuse window (rotation already settled by then).
+// 5s gives the retry a chance to land inside the window for a pure-gateway 502 (token still alive).
+// Env-overridable; the value is a hypothesis (no live rotation while token is dead), proof = unit tests.
+const RETRY_5XX_PAUSE_MS = Math.max(0, Number(process.env.WHOOP_RETRY_5XX_PAUSE_MS) || 5 * 1000) // single 5xx retry pause
 const REAUTH_DEDUP_HOURS = 24
 
 function log(msg) {
@@ -659,7 +662,7 @@ async function main() {
 
 // Export the token layer for unit tests (see src/tests/whoop-token.test.ts).
 module.exports = { refreshToken, getToken, alertReauthIfDue, ReauthRequiredError, TransientRefreshError,
-  REFRESH_THRESHOLD_MS, MIN_REFRESH_INTERVAL_MS, REAUTH_DEDUP_HOURS }
+  REFRESH_THRESHOLD_MS, MIN_REFRESH_INTERVAL_MS, REAUTH_DEDUP_HOURS, RETRY_5XX_PAUSE_MS }
 
 // Run only when invoked directly, not when required by a test.
 if (require.main === module) {

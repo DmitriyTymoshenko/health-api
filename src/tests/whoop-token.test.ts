@@ -20,7 +20,7 @@
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const mod = require('../../scripts/sync-whoop')
 const { refreshToken, getToken, alertReauthIfDue, ReauthRequiredError, TransientRefreshError,
-  REFRESH_THRESHOLD_MS, MIN_REFRESH_INTERVAL_MS, REAUTH_DEDUP_HOURS } = mod as {
+  REFRESH_THRESHOLD_MS, MIN_REFRESH_INTERVAL_MS, REAUTH_DEDUP_HOURS, RETRY_5XX_PAUSE_MS } = mod as {
     refreshToken: (c: any, deps?: any) => Promise<any>
     getToken: (deps?: any) => Promise<string>
     alertReauthIfDue: (detail: string, deps?: any) => Promise<boolean>
@@ -29,6 +29,7 @@ const { refreshToken, getToken, alertReauthIfDue, ReauthRequiredError, Transient
     REFRESH_THRESHOLD_MS: number
     MIN_REFRESH_INTERVAL_MS: number
     REAUTH_DEDUP_HOURS: number
+    RETRY_5XX_PAUSE_MS: number
   }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -64,7 +65,7 @@ function depsWith(http: ReturnType<typeof mockHttp>, over: Record<string, any> =
     readCreds: () => baseCreds(),
     writeCreds: jest.fn(),
     log: jest.fn(),
-    sleep: jest.fn(async () => {}),
+    sleep: jest.fn(async (_ms: number) => {}),
     alertReauthIfDue: jest.fn(async () => true),
     now: () => Date.parse('2026-08-03T10:00:00.000Z'), // 1h before token expiry
     ...over,
@@ -90,13 +91,15 @@ describe('refreshToken — clean 2xx rotation', () => {
 
 // ── 2. 5xx → one retry → 5xx → TransientRefreshError (no alert, no write) ─────
 describe('refreshToken — persistent 5xx throws Transient (no blind 3×)', () => {
-  it('retries ONCE after a 60s pause, then throws TransientRefreshError', async () => {
+  it('retries ONCE after a SHORT (~5s) pause, then throws TransientRefreshError', async () => {
     const http = mockHttp([{ err: 'HTTP 502: Bad Gateway' }, { err: 'HTTP 502: Bad Gateway' }])
     const deps = depsWith(http)
     await expect(refreshToken(baseCreds(), deps)).rejects.toThrow(/WHOOP_REFRESH_TRANSIENT/)
 
     expect(http.calls).toHaveLength(2)            // exactly one retry, NOT three
-    expect(deps.sleep).toHaveBeenCalledTimes(1)   // the 60s pause before the retry
+    expect(deps.sleep).toHaveBeenCalledTimes(1)   // one pause before the retry
+    // #904/C2: pause must be SHORT (≤10s) to land inside Ory's reuse window — 60s was a guaranteed miss
+    expect(deps.sleep.mock.calls[0][0]).toBeLessThanOrEqual(10_000)
     expect(deps.writeCreds).not.toHaveBeenCalled()
     expect(deps.alertReauthIfDue).not.toHaveBeenCalled() // 5xx is not a reauth crisis
   })
@@ -340,5 +343,9 @@ describe('token constants (approved plan)', () => {
   })
   it('REAUTH_DEDUP_HOURS is 24', () => {
     expect(REAUTH_DEDUP_HOURS).toBe(24)
+  })
+  it('RETRY_5XX_PAUSE_MS is short (~5s, ≤15s) — inside Ory reuse window (#904/C2)', () => {
+    expect(RETRY_5XX_PAUSE_MS).toBeGreaterThanOrEqual(1_000)
+    expect(RETRY_5XX_PAUSE_MS).toBeLessThanOrEqual(15_000)
   })
 })
