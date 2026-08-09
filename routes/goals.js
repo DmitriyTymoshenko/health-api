@@ -1,4 +1,5 @@
 const { Router } = require('express')
+const { proteinGoalG, resolveWeightKg } = require('../lib/nutrition-targets')
 
 module.exports = function (getDB) {
   const router = Router()
@@ -72,9 +73,19 @@ module.exports = function (getDB) {
       const proteinGoal = goalsData.find(g => g.type === 'protein')
       const waterGoal = goalsData.find(g => g.type === 'water')
 
+      // Protein streak threshold (#961): fallback is now proteinGoalG() — the same
+      // 1.6 g/kg auto-calc as /nutrition/summary — never the old hardcoded 180 g.
+      // An explicit `goals` collection entry (type='protein') still wins outright;
+      // that is this endpoint's OWN override layer and is separate from
+      // profile.daily_protein_goal_g (resolveProteinGoalG's override), so this uses
+      // the plain proteinGoalG(), not resolveProteinGoalG().
+      const profile = await db.collection('personal_profile').findOne({ _type: 'profile' })
+      const latestWeightEntry = await db.collection('weight_log').findOne({}, { sort: { date: -1 } })
+      const weightKg = resolveWeightKg(profile, latestWeightEntry?.weight_kg)
+
       const goals = {
         calories_limit: caloriesGoal?.target_value || 2200,
-        protein_min: proteinGoal?.target_value || 180,
+        protein_min: proteinGoal?.target_value || proteinGoalG(weightKg),
         water_min_ml: waterGoal?.target_value || 2500,
         steps_min: 10000,
         supplements_count: 8,

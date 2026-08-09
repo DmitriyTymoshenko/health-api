@@ -1,4 +1,5 @@
 const { Router } = require('express')
+const { proteinGoalG } = require('../lib/nutrition-targets')
 
 module.exports = function (getDB) {
   const router = Router()
@@ -37,7 +38,7 @@ module.exports = function (getDB) {
     weight_goal_date: '2026-10-01',
     body_fat_goal_pct: null,
     daily_kcal_goal: null, // null = auto-calculate from TDEE
-    daily_protein_goal_g: 150,
+    daily_protein_goal_g: null, // null = auto-calculate, 1.6 g/kg (#961, lib/nutrition-targets.js)
     daily_steps_goal: 8000,
     sleep_goal_hours: 8,
 
@@ -127,7 +128,7 @@ module.exports = function (getDB) {
           d.setDate(d.getDate() + daysToGoal)
           return d.toISOString().slice(0, 10)
         })(),
-        protein_recommended_g: Math.round(weight * 1.6),
+        protein_recommended_g: proteinGoalG(weight), // same formula, now the SINGLE SOURCE (#961) — was a local Math.round(weight*1.6) duplicate
       })
     } catch (err) {
       res.status(500).json({ error: err.message })

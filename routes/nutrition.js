@@ -6,6 +6,10 @@ const {
   satFatStatus,
   sugarLimitG,
   sugarStatus,
+  resolveProteinGoalG,
+  resolveWeightKg,
+  fiberGoalG,
+  goalStatus,
 } = require('../lib/nutrition-targets')
 const { aggregateDay } = require('../lib/nutrition-aggregate')
 
@@ -76,9 +80,7 @@ async function sendMealTelegramNotification(db, doc) {
 
     // Get profile targets
     const DEFAULT_KCAL = 1929
-    const DEFAULT_PROTEIN = 150
     let kcalTarget = DEFAULT_KCAL
-    let proteinTarget = DEFAULT_PROTEIN
 
     const profile = await db.collection('personal_profile').findOne({ _type: 'profile' })
     if (profile) {
@@ -87,8 +89,14 @@ async function sendMealTelegramNotification(db, doc) {
       } else if (profile.tdee_kcal && profile.deficit_kcal) {
         kcalTarget = profile.tdee_kcal - profile.deficit_kcal
       }
-      if (profile.daily_protein_goal_g) proteinTarget = profile.daily_protein_goal_g
     }
+
+    // Protein target: SINGLE SOURCE via resolveProteinGoalG (#961) — no more local
+    // 150 g constant. Honours an explicit profile.daily_protein_goal_g override;
+    // otherwise auto-calculated from the latest weight_log entry (1.6 g/kg).
+    const latestWeightEntry = await db.collection('weight_log').findOne({}, { sort: { date: -1 } })
+    const weightKg = resolveWeightKg(profile, latestWeightEntry?.weight_kg)
+    const proteinTarget = resolveProteinGoalG(profile, weightKg) || 150 // last-resort guard: no weight data anywhere (fresh/empty DB) — avoid a divide-by-zero progress bar below
 
     // Also check WHOOP for dynamic calorie target
     const whoopCycle = await db.collection('whoop_cycles').findOne({ date: today })
@@ -228,6 +236,22 @@ module.exports = function (getDB) {
       summary.sat_fat_status = satFatStatus(summary.sat_fat_g, summary.sat_fat_goal_g)
       summary.sugar_goal_g = sugarLimitG(kcalBasis)
       summary.sugar_status = sugarStatus(summary.sugar_g, summary.sugar_goal_g)
+
+      // DAILY GOALS (#961) — protein (1.6 g/kg) and fiber (14 g/1000 kcal). These are
+      // targets to REACH, not ceilings to stay under, so they use goalStatus (the
+      // inverse ladder of limitStatus), never satFatStatus/sugarStatus.
+      // Math + weight resolution live in lib/nutrition-targets.js — SINGLE SOURCE,
+      // same as the ceilings above.
+      const latestWeightEntry = await db.collection('weight_log').findOne({}, { sort: { date: -1 } })
+      const weightKg = resolveWeightKg(profile, latestWeightEntry?.weight_kg)
+      summary.protein_goal_g = resolveProteinGoalG(profile, weightKg)
+      summary.protein_status = goalStatus(summary.protein_g, summary.protein_goal_g)
+      // Flags "no weight anywhere to auto-calculate from" (empty weight_log AND no
+      // profile.weight_goal_kg) — distinct from sat_fat_incomplete/sugar_incomplete,
+      // which flag missing LOGGED-ENTRY fields, not a missing GOAL input.
+      summary.protein_incomplete = weightKg <= 0
+      summary.fiber_goal_g = fiberGoalG(kcalBasis)
+      summary.fiber_status = goalStatus(summary.fiber_g, summary.fiber_goal_g)
 
       res.json(summary)
     } catch (err) {
