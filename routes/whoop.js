@@ -304,6 +304,13 @@ module.exports = function (getDB) {
       creds.token_expires_at = new Date(Date.now() + (tokenData.expires_in || 3600) * 1000).toISOString()
       fs.writeFileSync(CREDS_PATH, JSON.stringify(creds, null, 2))
 
+      // #919 B: re-auth just completed (fresh tokens written). Reset the reauth-alert
+      // dedup state to "ok" so the FIRST failure after this alerts immediately, instead
+      // of being absorbed by the 24h window left over from before the re-auth. Best-effort.
+      try { require('../scripts/sync-whoop').markSyncSuccess() } catch (e) {
+        console.log(`whoop callback: alert-state reset failed (${e.message})`)
+      }
+
       res.send('<h1>✅ WHOOP авторизація успішна! Можна закрити це вікно.<br>Дані будуть синхронізовані автоматично.</h1>')
     } catch (err) {
       res.status(500).send(`<h2>❌ Помилка: ${err.message}</h2>`)

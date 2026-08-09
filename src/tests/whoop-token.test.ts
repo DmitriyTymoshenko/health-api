@@ -21,7 +21,8 @@
 const mod = require('../../scripts/sync-whoop')
 const { refreshToken, getToken, alertReauthIfDue, ReauthRequiredError, TransientRefreshError,
   REFRESH_THRESHOLD_MS, MIN_REFRESH_INTERVAL_MS, REAUTH_DEDUP_HOURS, RETRY_5XX_PAUSE_MS,
-  DEFAULT_UA, buildRequestHeaders, captureSetCookie, cookieHeaderFor, resetCookieJar } = mod as {
+  DEFAULT_UA, buildRequestHeaders, captureSetCookie, cookieHeaderFor, resetCookieJar,
+  markSyncSuccess } = mod as {
     refreshToken: (c: any, deps?: any) => Promise<any>
     getToken: (deps?: any) => Promise<string>
     alertReauthIfDue: (detail: string, deps?: any) => Promise<boolean>
@@ -36,6 +37,7 @@ const { refreshToken, getToken, alertReauthIfDue, ReauthRequiredError, Transient
     captureSetCookie: (host: string, setCookieHeader: string | string[] | undefined) => void
     cookieHeaderFor: (host: string) => string | null
     resetCookieJar: () => void
+    markSyncSuccess: (deps?: any) => boolean
   }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -300,7 +302,11 @@ describe('getToken — when to refresh', () => {
   })
 })
 
-// ── 8. alertReauthIfDue — dedup gate (≥24h between alerts) ───────────────────
+// ── 8. alertReauthIfDue — dedup gate (state-change ok→fail + ≥24h reminder) ──
+// #919 B/C: the dedup is tied to a STATE CHANGE, not just time. ok→fail alerts
+// IMMEDIATELY (even within 24h); fail→fail is suppressed up to 24h, then reminds.
+// This is the fix for the 14h-silent re-death: a system that was healthy and just
+// died must be heard at once, not absorbed by a leftover dedup window.
 describe('alertReauthIfDue — dedup', () => {
   const baseDeps = (over: Record<string, any> = {}) => ({
     now: () => Date.parse('2026-08-03T10:00:00.000Z'),
@@ -310,17 +316,26 @@ describe('alertReauthIfDue — dedup', () => {
     ...over,
   })
 
-  it('sends the alert when no prior alert file exists', async () => {
+  it('sends the alert when no prior alert file exists (first-ever failure = state change)', async () => {
     const d = baseDeps()
     const sent = await alertReauthIfDue('current 400; prev 400', d)
     expect(sent).toBe(true)
     expect(d.sendTelegram).toHaveBeenCalledTimes(1)
-    expect(d.writeFile).toHaveBeenCalledTimes(1) // persisted dedup timestamp
+    expect(d.writeFile).toHaveBeenCalledTimes(1) // persisted dedup state
   })
 
-  it('suppresses when the last alert was < 24h ago', async () => {
+  it('state change ok→fail alerts IMMEDIATELY even within 24h', async () => {
     const d = baseDeps({
-      readFile: () => JSON.stringify({ last_alerted_at: '2026-08-03T05:00:00.000Z' }), // 5h ago
+      readFile: () => JSON.stringify({ last_state: 'ok', last_alerted_at: '2026-08-03T05:00:00.000Z' }), // was ok, alerted 5h ago
+    })
+    const sent = await alertReauthIfDue('current 400; prev 400', d)
+    expect(sent).toBe(true) // NOT suppressed — state changed
+    expect(d.sendTelegram).toHaveBeenCalledTimes(1)
+  })
+
+  it('fail→fail within 24h is suppressed (reminder cadence)', async () => {
+    const d = baseDeps({
+      readFile: () => JSON.stringify({ last_state: 'fail', last_alerted_at: '2026-08-03T05:00:00.000Z' }), // 5h ago
     })
     const sent = await alertReauthIfDue('current 400; prev 400', d)
     expect(sent).toBe(false)
@@ -328,13 +343,52 @@ describe('alertReauthIfDue — dedup', () => {
     expect(d.writeFile).not.toHaveBeenCalled()
   })
 
-  it('sends again when the last alert was > 24h ago', async () => {
+  it('fail→fail after 24h sends a reminder', async () => {
     const d = baseDeps({
-      readFile: () => JSON.stringify({ last_alerted_at: '2026-08-02T05:00:00.000Z' }), // 29h ago
+      readFile: () => JSON.stringify({ last_state: 'fail', last_alerted_at: '2026-08-02T05:00:00.000Z' }), // 29h ago
     })
     const sent = await alertReauthIfDue('current 400; prev 400', d)
     expect(sent).toBe(true)
     expect(d.sendTelegram).toHaveBeenCalledTimes(1)
+  })
+
+  it('persists last_state:"fail" when alerting', async () => {
+    const d = baseDeps()
+    await alertReauthIfDue('current 400; prev 400', d)
+    const written = JSON.parse(d.writeFile.mock.calls[0][1])
+    expect(written.last_state).toBe('fail')
+  })
+})
+
+// ── 8b. markSyncSuccess — reset alert state on a clean sync / re-auth (#919 B) ─
+describe('markSyncSuccess — reset alert state', () => {
+  it('writes last_state:"ok" so the next failure is a state change', () => {
+    const writeFile = jest.fn()
+    markSyncSuccess({ writeFile })
+    expect(writeFile).toHaveBeenCalledTimes(1)
+    const written = JSON.parse(writeFile.mock.calls[0][1])
+    expect(written.last_state).toBe('ok')
+  })
+
+  it('after markSyncSuccess, a failure 1h later alerts immediately (not suppressed)', async () => {
+    const writeFile = jest.fn()
+    markSyncSuccess({ writeFile })
+    // simulate the dedup file markSyncSuccess just wrote, read back on the next failure
+    const okState = writeFile.mock.calls[0][1]
+    const d = {
+      now: () => Date.parse('2026-08-03T10:00:00.000Z'),
+      readFile: () => okState,
+      writeFile: jest.fn(),
+      sendTelegram: jest.fn(async () => true),
+    }
+    const sent = await alertReauthIfDue('current 400; prev 400', d)
+    expect(sent).toBe(true) // ok→fail = state change = immediate
+    expect(d.sendTelegram).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not throw if the dedup file is unwritable (best-effort)', () => {
+    const writeFile = () => { throw new Error('EACCES') }
+    expect(() => markSyncSuccess({ writeFile })).not.toThrow()
   })
 })
 

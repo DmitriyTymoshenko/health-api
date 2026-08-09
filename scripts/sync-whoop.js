@@ -207,11 +207,15 @@ class TransientRefreshError extends Error {
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 
-// Dedup'd re-auth alert. Fires at most once per REAUTH_DEDUP_HOURS so an incident
-// produces ONE Telegram message, not ~48 (lesson 2026-07-31: 66 silent failures).
-// Writes {last_alerted_at} to REAUTH_DEDUP_PATH. Returns true if it actually sent.
-// `deps` (all optional, default to real fs/fetch): now, readFile, writeFile,
-// sendTelegram — injected so the dedup logic is unit-tested with no fs/network.
+// Dedup'd re-auth alert, tied to a STATE CHANGE not just time (#919 B/C).
+//   - ok→fail (or first-ever failure): alert IMMEDIATELY, regardless of the 24h window.
+//   - fail→fail: suppress up to REAUTH_DEDUP_HOURS, then send a reminder.
+// This fixes the 14h-silent re-death: a system that was healthy (or just re-authorized
+// via markSyncSuccess) and now fails must be heard at once — the leftover dedup window
+// from BEFORE the recovery must not absorb the new failure. Lesson 2026-07-31 (66 silent
+// failures) is preserved: fail→fail still dedups to one message per 24h.
+// Writes {last_alerted_at, last_state} to REAUTH_DEDUP_PATH. Returns true if it sent.
+// `deps` (all optional): now, readFile, writeFile, sendTelegram — injected for unit tests.
 async function alertReauthIfDue(detail, deps) {
   const d = Object.assign({
     now: Date.now,
@@ -220,19 +224,25 @@ async function alertReauthIfDue(detail, deps) {
     sendTelegram,
   }, deps || {})
   let lastAlert = 0
+  let lastState = null
   try {
     const f = JSON.parse(d.readFile(REAUTH_DEDUP_PATH))
     lastAlert = new Date(f.last_alerted_at).getTime() || 0
+    lastState = f.last_state || null
   } catch {
-    /* no prior alert — fire */
+    /* no prior file — treat as no prior state (state change) */
   }
-  const sinceHours = (d.now() - lastAlert) / 3_600_000
-  if (sinceHours < REAUTH_DEDUP_HOURS) {
-    log(`${REAUTH_MARKER}: ${detail} (alert suppressed — last ${sinceHours.toFixed(1)}h ago, dedup ${REAUTH_DEDUP_HOURS}h)`)
-    return false
+  const stateChanged = lastState !== 'fail'
+  // Only the fail→fail path is bound by the 24h dedup; a state change fires at once.
+  if (!stateChanged) {
+    const sinceHours = (d.now() - lastAlert) / 3_600_000
+    if (sinceHours < REAUTH_DEDUP_HOURS) {
+      log(`${REAUTH_MARKER}: ${detail} (alert suppressed — still failing, last ${sinceHours.toFixed(1)}h ago, dedup ${REAUTH_DEDUP_HOURS}h)`)
+      return false
+    }
   }
   const ts = new Date(d.now()).toISOString()
-  log(`${REAUTH_MARKER}: ${detail} — alerting owner (first in 24h)`)
+  log(`${REAUTH_MARKER}: ${detail} — alerting owner (${stateChanged ? 'state change ok→fail' : `reminder after ${REAUTH_DEDUP_HOURS}h`})`)
   const sent = await d.sendTelegram(
     `🚨 WHOOP sync requires re-authorization\n` +
     `Server ${ts}\n` +
@@ -241,11 +251,27 @@ async function alertReauthIfDue(detail, deps) {
     `(dedup — next reminder in 24h)`
   )
   try {
-    d.writeFile(REAUTH_DEDUP_PATH, JSON.stringify({ last_alerted_at: ts }, null, 2))
+    d.writeFile(REAUTH_DEDUP_PATH, JSON.stringify({ last_alerted_at: ts, last_state: 'fail' }, null, 2))
   } catch (e) {
     log(`WHOOP alert: could not persist dedup file (${e.message})`)
   }
   return sent
+}
+
+// Reset the alert state to "ok". Called at the end of a clean sync (main) AND from the
+// OAuth callback (routes/whoop.js) right after an interactive re-auth writes new tokens.
+// This makes the NEXT failure an ok→fail transition → immediate alert, instead of being
+// swallowed by a dedup window left over from before the recovery (#919 B). Best-effort:
+// never throws on a write failure (the sync itself already succeeded).
+function markSyncSuccess(deps) {
+  const writeFile = (deps && deps.writeFile) || ((p, c) => fs.writeFileSync(p, c))
+  try {
+    writeFile(REAUTH_DEDUP_PATH, JSON.stringify({ last_state: 'ok', last_alerted_at: 0 }, null, 2))
+    return true
+  } catch (e) {
+    log(`WHOOP alert: could not reset dedup state on success (${e.message})`)
+    return false
+  }
 }
 
 // Apply a successful token response: update access/refresh tokens, stash the
@@ -702,12 +728,15 @@ async function main() {
     log(`Activity stats recalc failed: ${err.message}`)
   }
 
+  // #919 B/C: a clean sync resets the alert state to "ok", so the next failure is an
+  // ok→fail transition that alerts immediately instead of being absorbed by the 24h dedup.
+  markSyncSuccess()
   await client.close()
   log('WHOOP sync complete.')
 }
 
 // Export the token layer for unit tests (see src/tests/whoop-token.test.ts).
-module.exports = { refreshToken, getToken, alertReauthIfDue, ReauthRequiredError, TransientRefreshError,
+module.exports = { refreshToken, getToken, alertReauthIfDue, markSyncSuccess, ReauthRequiredError, TransientRefreshError,
   REFRESH_THRESHOLD_MS, MIN_REFRESH_INTERVAL_MS, REAUTH_DEDUP_HOURS, RETRY_5XX_PAUSE_MS,
   DEFAULT_UA, buildRequestHeaders, captureSetCookie, cookieHeaderFor, resetCookieJar }
 
