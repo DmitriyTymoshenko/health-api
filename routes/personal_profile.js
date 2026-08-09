@@ -1,5 +1,5 @@
 const { Router } = require('express')
-const { proteinGoalG } = require('../lib/nutrition-targets')
+const { proteinGoalG, goalKcalDelta } = require('../lib/nutrition-targets')
 
 module.exports = function (getDB) {
   const router = Router()
@@ -108,10 +108,20 @@ module.exports = function (getDB) {
       const idealMin = Math.round(18.5 * Math.pow(height / 100, 2))
       const idealMax = Math.round(24.9 * Math.pow(height / 100, 2))
 
-      // Days to goal at current deficit
-      const deficit = profile.deficit_kcal || 500
+      // Days to goal at the CURRENT GOAL MODE's daily rate (#968).
+      //
+      // Was `profile.deficit_kcal || 500`. Converting that to `??` ALONE would have been
+      // a crash, not a fix: a maintenance profile (deficit 0) makes this a division by
+      // zero -> Infinity -> `d.setDate(d.getDate() + Infinity)` -> Invalid Date ->
+      // `.toISOString()` throws RangeError -> HTTP 500 on GET /api/profile/metrics.
+      // The `|| 500` was accidentally masking that. So the rate now comes from the
+      // SIGNED goal delta, and a non-shrinking mode (maintenance / muscle_gain) honestly
+      // reports "no ETA" instead of inventing one from a stale deficit number.
+      const dailyDeficit = -goalKcalDelta(profile) // > 0 only while actually cutting
       const toGoal = weight - (profile.weight_goal_kg || 96)
-      const daysToGoal = toGoal > 0 ? Math.round((toGoal * 7700) / deficit) : 0
+      const daysToGoal = toGoal > 0 && dailyDeficit > 0
+        ? Math.round((toGoal * 7700) / dailyDeficit)
+        : 0
 
       res.json({
         weight_kg: weight,

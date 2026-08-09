@@ -84,8 +84,19 @@ module.exports = function (getDB) {
       const actualChange = parseFloat((latest.weight_kg - baselineWeight).toFixed(1))
       const actualPerWeek = parseFloat((actualChange / daysDiff * 7).toFixed(2))
 
+      // Deficit canon is `personal_profile.deficit_kcal` (#968) — the SAME document
+      // that holds `primary_goal`, so a future mode switch (#966) cannot desync the
+      // weight page from the nutrition pages. `user_settings.daily_deficit_goal`
+      // stays as the legacy fallback (it is really a per-DATE plan snapshot, see
+      // routes/settings.js -> daily_plans). Measured 2026-08-09: both are 500, so
+      // this read is output-identical today; it is here to close the desync
+      // structurally rather than leave it as a note in a ticket.
       const settings = await db.collection('user_settings').findOne({ key: 'default' })
-      const deficit = settings?.daily_deficit_goal ?? 500
+      const profile = await db.collection('personal_profile').findOne({ _type: 'profile' })
+      const deficit = profile?.deficit_kcal ?? settings?.daily_deficit_goal ?? 500
+      // SIGN deliberately NOT taken from goalKcalDelta here: the status ladder below
+      // ("плато", "швидше/повільніше") is built around losing weight. Teaching this
+      // page to grade a surplus is #966, not #968 — so it keeps reading a magnitude.
       const plannedPerWeek = parseFloat(((deficit * 7) / 7700).toFixed(2)) * -1
 
       let status, message, recommendation, color

@@ -1,5 +1,14 @@
 const { Router } = require('express')
-const { resolveDayKcalTarget, stableDayKcalBasis, satFatLimitG, satFatStatus } = require('../lib/nutrition-targets')
+const {
+  resolveDayKcalTarget,
+  stableDayKcalBasis,
+  satFatLimitG,
+  satFatStatus,
+  resolveDeficitKcal,
+  goalKcalDelta,
+  resolveProteinGoalG,
+  resolveWeightKg,
+} = require('../lib/nutrition-targets')
 
 // High-protein suggestions pool
 const HIGH_PROTEIN_POOL = [
@@ -248,15 +257,22 @@ module.exports = function (getDB) {
       const whoopCycle = await db.collection('whoop_cycles').findOne({ date })
       const caloriesBurned = whoopCycle?.calories_burned || null
 
-      // Get deficit goal from profile (default 500 kcal)
-      const deficitGoal = profile?.deficit_kcal || 500
+      // Deficit magnitude for the response payload (`deficit_goal`, ~line 484).
+      // resolveDeficitKcal (#968) uses `??`, not `||`: a deliberate 0 stays 0.
+      const deficitGoal = resolveDeficitKcal(profile)
 
       // Calculate targets
-      // Dynamic calorie target: burned - deficit (if WHOOP data exists)
+      // Dynamic calorie target: burned + goal delta (if WHOOP data exists)
       // Fall back to profile target if no WHOOP data.
       // Shared helper — GET /api/nutrition/summary derives the SAME target (BASE RULE).
       const targetCalories = resolveDayKcalTarget(profile, caloriesBurned)
-      const targetProtein = profile.daily_protein_goal_g || 150
+      // Protein: SINGLE SOURCE via resolveProteinGoalG (#961), wired here by #968.
+      // A local `daily_protein_goal_g || 150` would have started CONTRADICTING
+      // /api/nutrition/summary the moment #968 nulls the orphan 150 g override —
+      // summary would auto-calculate 157 while this endpoint fell back to the 150
+      // literal (BASE RULE: one metric, one definition).
+      const latestWeightEntry = await db.collection('weight_log').findOne({}, { sort: { date: -1 } })
+      const targetProtein = resolveProteinGoalG(profile, resolveWeightKg(profile, latestWeightEntry?.weight_kg)) || 150
       // Macro split: 33% protein, 40% carbs, 27% fat
       const targetCarbs = Math.round(targetCalories * 0.407 / 4)
       const targetFat = Math.round(targetCalories * 0.266 / 9)
@@ -536,10 +552,13 @@ module.exports = function (getDB) {
         }
       }
 
-      const tdee = profile.tdee_kcal || 2429
-      const deficit = profile.deficit_kcal || 500
-      const targetCalories = profile.daily_kcal_goal || (tdee - deficit)
-      const targetProtein = profile.daily_protein_goal_g || 150
+      // Weekly trend baseline — SINGLE SOURCE via stableDayKcalBasis (#968).
+      // This was a hand-rolled third copy of `daily_kcal_goal || (tdee - deficit)`,
+      // carrying both the `|| 500` defect and the subtract-only sign, so a bulking
+      // profile would have been graded against a CUT target all week.
+      const targetCalories = stableDayKcalBasis(profile)
+      const latestWeightEntry7d = await db.collection('weight_log').findOne({}, { sort: { date: -1 } })
+      const targetProtein = resolveProteinGoalG(profile, resolveWeightKg(profile, latestWeightEntry7d?.weight_kg)) || 150
 
       // Build list of last 7 days (today inclusive)
       const todayDate = new Date()
@@ -565,7 +584,9 @@ module.exports = function (getDB) {
       const whoopByDate = {}
       whoopCycles.forEach(c => { whoopByDate[c.date] = c })
 
-      const deficitGoal = profile?.deficit_kcal || 500
+      // Per-day target uses the SIGNED goal delta (#968), not a bare `- deficit`:
+      // on a bulk the day's budget must sit ABOVE the burn, not 500 kcal below it.
+      const goalDelta = goalKcalDelta(profile)
 
       // Group by date and sum macros
       const dayMap = {}
@@ -587,7 +608,7 @@ module.exports = function (getDB) {
         const whoopDay = whoopByDate[date]
         const burned = whoopDay?.calories_burned || null
         const dayTarget = burned && burned > 1200
-          ? Math.round(burned - deficitGoal)
+          ? Math.round(burned + goalDelta)
           : targetCalories
         const dayConsumed = Math.round(d.calories)
         // deficit = consumed - burned (negative = deficit, target = -500)
