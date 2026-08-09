@@ -7,6 +7,7 @@ const {
   sugarLimitG,
   sugarStatus,
 } = require('../lib/nutrition-targets')
+const { aggregateDay } = require('../lib/nutrition-aggregate')
 
 const TELEGRAM_BOT_TOKEN = '' // notifications disabled per user request
 const TELEGRAM_OWNER_ID = process.env.OWNER_TELEGRAM_ID || '455440443'
@@ -211,34 +212,10 @@ module.exports = function (getDB) {
       const today = req.query.date || new Date().toISOString().split('T')[0]
       const data = await db.collection('nutrition_log').find({ date: today }).toArray()
 
-      const summary = data.reduce(
-        (acc, item) => {
-          acc.kcal += item.kcal || item.calories || 0
-          acc.protein_g += item.protein_g || 0
-          acc.carbs_g += item.carbs_g || 0
-          acc.fat_g += item.fat_g || 0
-          acc.fiber_g += item.fiber_g || 0
-          acc.sugar_g += item.sugar_g || 0
-          acc.sat_fat_g += item.sat_fat_g || 0
-          // incompleteness: any item lacking sat_fat_g means the day's sat_fat total is underestimated
-          if (item.sat_fat_g == null) acc.sat_fat_incomplete = true
-          // same for sugar: an entry logged before sugar was tracked drags the day's
-          // total DOWN, which would render a green 'ok' on a day that actually breached
-          // the ceiling — the exact case the metric exists for.
-          if (item.sugar_g == null) acc.sugar_incomplete = true
-          return acc
-        },
-        { date: today, kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0, sugar_g: 0, sat_fat_g: 0, sat_fat_incomplete: false, sugar_incomplete: false, items: data.length }
-      )
-
-      // Round to 1 decimal
-      summary.kcal = Math.round(summary.kcal)
-      summary.protein_g = Math.round(summary.protein_g * 10) / 10
-      summary.carbs_g = Math.round(summary.carbs_g * 10) / 10
-      summary.fat_g = Math.round(summary.fat_g * 10) / 10
-      summary.fiber_g = Math.round(summary.fiber_g * 10) / 10
-      summary.sugar_g = Math.round(summary.sugar_g * 10) / 10
-      summary.sat_fat_g = Math.round(summary.sat_fat_g * 10) / 10
+      // Sums both on-disk formats (flat modern + legacy nested items[]) — see
+      // lib/nutrition-aggregate.js for why (#862: legacy nested-items records were
+      // silently contributing 0 kcal/protein/carbs/fat to the day total).
+      const summary = aggregateDay(today, data)
 
       // DAILY CEILINGS — saturated fat (Koliada norm: ≤10% of calories; 9 kcal/g)
       // and sugar (WHO: ≤10% of calories; 4 kcal/g).
