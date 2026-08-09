@@ -20,7 +20,8 @@
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const mod = require('../../scripts/sync-whoop')
 const { refreshToken, getToken, alertReauthIfDue, ReauthRequiredError, TransientRefreshError,
-  REFRESH_THRESHOLD_MS, MIN_REFRESH_INTERVAL_MS, REAUTH_DEDUP_HOURS, RETRY_5XX_PAUSE_MS } = mod as {
+  REFRESH_THRESHOLD_MS, MIN_REFRESH_INTERVAL_MS, REAUTH_DEDUP_HOURS, RETRY_5XX_PAUSE_MS,
+  DEFAULT_UA, buildRequestHeaders, captureSetCookie, cookieHeaderFor, resetCookieJar } = mod as {
     refreshToken: (c: any, deps?: any) => Promise<any>
     getToken: (deps?: any) => Promise<string>
     alertReauthIfDue: (detail: string, deps?: any) => Promise<boolean>
@@ -30,6 +31,11 @@ const { refreshToken, getToken, alertReauthIfDue, ReauthRequiredError, Transient
     MIN_REFRESH_INTERVAL_MS: number
     REAUTH_DEDUP_HOURS: number
     RETRY_5XX_PAUSE_MS: number
+    DEFAULT_UA: string
+    buildRequestHeaders: (opts: any, host: string) => Record<string, string>
+    captureSetCookie: (host: string, setCookieHeader: string | string[] | undefined) => void
+    cookieHeaderFor: (host: string) => string | null
+    resetCookieJar: () => void
   }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -347,5 +353,58 @@ describe('token constants (approved plan)', () => {
   it('RETRY_5XX_PAUSE_MS is short (~5s, ≤15s) — inside Ory reuse window (#904/C2)', () => {
     expect(RETRY_5XX_PAUSE_MS).toBeGreaterThanOrEqual(1_000)
     expect(RETRY_5XX_PAUSE_MS).toBeLessThanOrEqual(15_000)
+  })
+})
+
+// ── 9. Transport: User-Agent + __cf_bm cookie jar (#904/C3) ──────────────────
+// Pure-function tests on the header/cookie helpers (httpRequest itself is mocked in
+// token tests; the transport contract is the helpers it delegates to). The pre-fix
+// file had no UA and no cookie jar — every request looked like a fresh bot to
+// Cloudflare's bot-management, which is part of why the token endpoint 502s.
+describe('transport — User-Agent + __cf_bm cookie jar (#904/C3)', () => {
+  beforeEach(() => resetCookieJar())
+
+  it('DEFAULT_UA is the chuttyevo-health string carrying the domain', () => {
+    expect(DEFAULT_UA).toMatch(/chuttyevo-health\//)
+    expect(DEFAULT_UA).toContain('srv1532186.hstgr.cloud')
+  })
+
+  it('buildRequestHeaders adds the default User-Agent when the caller sets none', () => {
+    const h = buildRequestHeaders({ method: 'POST', headers: { 'Content-Type': 'x' } }, 'api.prod.whoop.com')
+    expect(h['User-Agent']).toBe(DEFAULT_UA)
+    expect(h['Content-Type']).toBe('x')
+  })
+
+  it('buildRequestHeaders lets the caller override User-Agent', () => {
+    const h = buildRequestHeaders({ headers: { 'User-Agent': 'custom/9.9' } }, 'h')
+    expect(h['User-Agent']).toBe('custom/9.9')
+  })
+
+  it('buildRequestHeaders omits Cookie when the jar is empty (no leakage)', () => {
+    const h = buildRequestHeaders({}, 'fresh-host.example')
+    expect(h['Cookie']).toBeUndefined()
+  })
+
+  it('captureSetCookie parses __cf_bm and buildRequestHeaders replays it as Cookie', () => {
+    captureSetCookie('api.prod.whoop.com', '__cf_bm=abc123; Domain=prod.whoop.com; Path=/; HttpOnly')
+    expect(cookieHeaderFor('api.prod.whoop.com')).toBe('__cf_bm=abc123')
+    const h = buildRequestHeaders({}, 'api.prod.whoop.com')
+    expect(h['Cookie']).toBe('__cf_bm=abc123')
+  })
+
+  it('captureSetCookie handles an array of set-cookie values', () => {
+    captureSetCookie('h', ['__cf_bm=zzz; Path=/', 'other=val; Path=/'])
+    expect(cookieHeaderFor('h')).toBe('__cf_bm=zzz')
+  })
+
+  it('captureSetCookie ignores cookies that are not __cf_bm', () => {
+    captureSetCookie('h', 'session=xyz; Path=/')
+    expect(cookieHeaderFor('h')).toBeNull()
+  })
+
+  it('cookie jar is per-host (token host and API host do not bleed)', () => {
+    captureSetCookie('a.host', '__cf_bm=aaa; Path=/')
+    expect(cookieHeaderFor('b.host')).toBeNull()
+    expect(cookieHeaderFor('a.host')).toBe('__cf_bm=aaa')
   })
 })

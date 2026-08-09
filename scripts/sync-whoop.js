@@ -62,6 +62,48 @@ const MIN_REFRESH_INTERVAL_MS = Math.max(0, Number(process.env.WHOOP_MIN_REFRESH
 const RETRY_5XX_PAUSE_MS = Math.max(0, Number(process.env.WHOOP_RETRY_5XX_PAUSE_MS) || 5 * 1000) // single 5xx retry pause
 const REAUTH_DEDUP_HOURS = 24
 
+// ── Transport: User-Agent + __cf_bm cookie jar (#904/C3) ─────────────────────
+// Cloudflare fronts api.prod.whoop.com. The pre-fix client sent Node's default UA
+// and never persisted the __cf_bm cookie Cloudflare sets to mark a "good client"
+// session — so every request looked like a fresh bot from a datacenter IP, which is
+// part of why the token endpoint returns CF 502/challenge. Default UA + a process-
+// lifetime cookie jar make us look like one continuous client across the run.
+const DEFAULT_UA = 'chuttyevo-health/1.0 (+https://srv1532186.hstgr.cloud)'
+const _cookieJar = new Map() // host -> { __cf_bm }; process-lifetime (fresh each cron run)
+
+function resetCookieJar() { _cookieJar.clear() }
+
+// Pure: pull __cf_bm out of a set-cookie header (string or array) and store per host.
+// Exported so the transport contract is unit-tested with no network.
+function captureSetCookie(host, setCookieHeader) {
+  if (!host || !setCookieHeader) return
+  const lines = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader]
+  let jar = _cookieJar.get(host) || {}
+  let changed = false
+  for (const line of lines) {
+    const m = /__cf_bm=([^;]+)/i.exec(String(line))
+    if (m) { jar.__cf_bm = m[1]; changed = true }
+  }
+  if (changed) _cookieJar.set(host, jar)
+}
+
+// Pure: build the Cookie header for a host from the jar (null if none captured).
+function cookieHeaderFor(host) {
+  const c = _cookieJar.get(host)
+  return c && c.__cf_bm ? `__cf_bm=${c.__cf_bm}` : null
+}
+
+// Pure: merge default UA + stored cookie with the caller's headers (caller wins, so a
+// caller may override UA if ever needed). Exported for unit testing.
+function buildRequestHeaders(opts, host) {
+  const cookie = cookieHeaderFor(host)
+  return Object.assign(
+    { 'User-Agent': DEFAULT_UA },
+    cookie ? { Cookie: cookie } : {},
+    opts.headers || {}
+  )
+}
+
 function log(msg) {
   console.log(`[${new Date().toISOString()}] ${msg}`)
 }
@@ -80,13 +122,17 @@ function writeCreds(creds) {
 function httpRequest(url, opts, body) {
   return new Promise((resolve, reject) => {
     const u = new URL(url)
+    const host = u.hostname
     const options = {
-      hostname: u.hostname,
+      hostname: host,
       path: u.pathname + (u.search || ''),
       method: opts.method || 'GET',
-      headers: opts.headers || {},
+      headers: buildRequestHeaders(opts, host), // #904/C3: default UA + __cf_bm cookie
     }
     const req = https.request(options, (res) => {
+      // Capture __cf_bm BEFORE the status check — even a 502 response sets it, and the
+      // single retry then resends it, which is the "warm client" signal Cloudflare wants.
+      captureSetCookie(host, res.headers['set-cookie'])
       let data = ''
       res.on('data', c => data += c)
       res.on('end', () => {
@@ -662,7 +708,8 @@ async function main() {
 
 // Export the token layer for unit tests (see src/tests/whoop-token.test.ts).
 module.exports = { refreshToken, getToken, alertReauthIfDue, ReauthRequiredError, TransientRefreshError,
-  REFRESH_THRESHOLD_MS, MIN_REFRESH_INTERVAL_MS, REAUTH_DEDUP_HOURS, RETRY_5XX_PAUSE_MS }
+  REFRESH_THRESHOLD_MS, MIN_REFRESH_INTERVAL_MS, REAUTH_DEDUP_HOURS, RETRY_5XX_PAUSE_MS,
+  DEFAULT_UA, buildRequestHeaders, captureSetCookie, cookieHeaderFor, resetCookieJar }
 
 // Run only when invoked directly, not when required by a test.
 if (require.main === module) {
