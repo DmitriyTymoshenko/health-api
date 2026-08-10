@@ -25,7 +25,7 @@ module.exports = function (getDB) {
     activity_level: 'moderate', // sedentary | light | moderate | active | very_active
     fitness_level: 'intermediate', // beginner | intermediate | advanced
     training_days_per_week: 3,
-    primary_goal: 'weight_loss', // weight_loss | muscle_gain | maintenance | endurance
+    primary_goal: 'weight_loss', // weight_loss | muscle_gain | maintenance | recomp | endurance (#966)
 
     // Nutrition preferences
     diet_type: 'none', // none | keto | paleo | vegan | vegetarian | mediterranean
@@ -38,7 +38,7 @@ module.exports = function (getDB) {
     weight_goal_date: '2026-10-01',
     body_fat_goal_pct: null,
     daily_kcal_goal: null, // null = auto-calculate from TDEE
-    daily_protein_goal_g: null, // null = auto-calculate, 1.6 g/kg (#961, lib/nutrition-targets.js)
+    daily_protein_goal_g: null, // null = auto-calculate, per-goal g/kg matrix (#966, lib/nutrition-targets.js)
     daily_steps_goal: 8000,
     sleep_goal_hours: 8,
 
@@ -138,7 +138,12 @@ module.exports = function (getDB) {
           d.setDate(d.getDate() + daysToGoal)
           return d.toISOString().slice(0, 10)
         })(),
-        protein_recommended_g: proteinGoalG(weight), // same formula, now the SINGLE SOURCE (#961) — was a local Math.round(weight*1.6) duplicate
+        // Same formula, THE single source (#961) — was a local Math.round(weight*1.6).
+        // `profile` is passed since #966: the coefficient is now per goal mode, and a
+        // call without it would silently pin this card to weight_loss (2.0 g/kg) while
+        // /api/nutrition/summary showed the mode's real number — one quantity, two
+        // screens, two answers (BASE RULE).
+        protein_recommended_g: proteinGoalG(weight, profile),
       })
     } catch (err) {
       res.status(500).json({ error: err.message })

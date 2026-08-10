@@ -21,7 +21,7 @@ const {
   SAT_FAT_KCAL_SHARE,
   SUGAR_KCAL_SHARE,
   KCAL_PER_G_CARB,
-  PROTEIN_G_PER_KG,
+  PROTEIN_G_PER_KG_BY_GOAL,
   FIBER_G_PER_1000_KCAL,
 } = require('../../lib/nutrition-targets')
 
@@ -239,12 +239,15 @@ describe('historical entries without sugar_g (sugar_incomplete flag)', () => {
 // #961 — protein_goal_g + fiber_goal_g, dynamic from profile
 // ---------------------------------------------------------------------------
 
-describe('proteinGoalG — 1.6 g/kg (vault 04.01: weight-loss/deficit band 1.6-2.4 g/kg, lower bound)', () => {
+describe('proteinGoalG — weight x the goal mode g/kg; default mode = weight_loss 2.0 (#966)', () => {
+  // #966 replaced #961's flat 1.6 with a per-mode matrix. With no profile passed,
+  // resolveGoalMode falls back to weight_loss = 2.0 g/kg, so every number here moved
+  // (98.2 kg: 157 -> 196). That is the owner's expected change, not a regression.
   it.each([
-    [98.2, 157], // live profile weight, 2026-08-09 (task #961 premise)
-    [90, 144],
-    [60, 96],
-    [70.5, 113],
+    [98.2, 196], // live profile weight, 2026-08-09 (task #961 premise; #966: was 157)
+    [90, 180], // was 144
+    [60, 120], // was 96
+    [70.5, 141], // was 113
   ])('%s kg -> %s g', (kg, expected) => {
     expect(proteinGoalG(kg)).toBe(expected)
   })
@@ -252,7 +255,7 @@ describe('proteinGoalG — 1.6 g/kg (vault 04.01: weight-loss/deficit band 1.6-2
   it('is a function of weight, not a hardcoded constant (the whole point of #961)', () => {
     expect(proteinGoalG(98.2)).not.toBe(proteinGoalG(60))
     expect(proteinGoalG(98.2)).toBeGreaterThan(proteinGoalG(60))
-    expect(PROTEIN_G_PER_KG).toBe(1.6)
+    expect(PROTEIN_G_PER_KG_BY_GOAL.weight_loss).toBe(2.0)
   })
 
   it.each([[0], [-10], [NaN], [null], [undefined]])(
@@ -298,14 +301,23 @@ describe('resolveProteinGoalG — explicit profile override wins outright, else 
     expect(resolveProteinGoalG({ daily_protein_goal_g: 200 }, 98.2)).toBe(200)
   })
 
-  it('falls back to proteinGoalG(weightKg) when the profile override is null (= auto-calculate)', () => {
-    expect(resolveProteinGoalG({ daily_protein_goal_g: null }, 98.2)).toBe(157)
-    expect(resolveProteinGoalG(null, 98.2)).toBe(157)
+  it('falls back to proteinGoalG(weightKg, profile) when the override is null (= auto-calculate)', () => {
+    // #966: a profile with no primary_goal auto-calculates at the DEFAULT mode
+    // (weight_loss, 2.0 g/kg) -> 196, where #961's flat constant gave 157.
+    expect(resolveProteinGoalG({ daily_protein_goal_g: null }, 98.2)).toBe(196)
+    expect(resolveProteinGoalG(null, 98.2)).toBe(196)
   })
 
   it('ignores a non-positive override and falls back to auto-calc', () => {
-    expect(resolveProteinGoalG({ daily_protein_goal_g: 0 }, 98.2)).toBe(157)
-    expect(resolveProteinGoalG({ daily_protein_goal_g: -5 }, 98.2)).toBe(157)
+    expect(resolveProteinGoalG({ daily_protein_goal_g: 0 }, 98.2)).toBe(196)
+    expect(resolveProteinGoalG({ daily_protein_goal_g: -5 }, 98.2)).toBe(196)
+  })
+
+  it('#966 — the override still wins over EVERY mode, including the highest (recomp)', () => {
+    // The override layer must not become mode-dependent: an explicit number the owner
+    // typed is an explicit number, whatever the mode says.
+    expect(resolveProteinGoalG({ daily_protein_goal_g: 150, primary_goal: 'recomp' }, 98.2)).toBe(150)
+    expect(resolveProteinGoalG({ daily_protein_goal_g: null, primary_goal: 'recomp' }, 98.2)).toBe(216)
   })
 })
 
@@ -369,13 +381,14 @@ describe('goalStatus — the INVERSE ladder of limitStatus (protein/fiber are ta
 })
 
 describe('#961 live scenario — 98.2 kg weight, 1929 kcal basis, measured 2026-08-09 consumption', () => {
-  it('protein: goal 157 g, 124 g consumed today -> danger (78.98%, below the 80% warning floor)', () => {
-    // The task's own acceptance text guessed "warning" here and flagged
-    // "перевір фактом" (verify by fact) — 124/157 = 0.7898, which is < 0.8, so the
-    // correct status is 'danger', not 'warning'. This test pins the real number.
+  it('protein: goal 196 g (#966, was 157), 124 g consumed -> danger (63.3%)', () => {
+    // #961's original acceptance text guessed "warning" here and flagged "перевір
+    // фактом" — 124/157 = 0.7898 (< 0.8) already made it 'danger'. #966 raises the
+    // weight_loss coefficient to 2.0 g/kg, so the goal is 196 and the ratio drops to
+    // 0.633 — same verdict, further from the boundary.
     const weightKg = resolveWeightKg({ weight_goal_kg: 96 }, 98.2)
     const goal = resolveProteinGoalG({ daily_protein_goal_g: null }, weightKg)
-    expect(goal).toBe(157)
+    expect(goal).toBe(196)
     expect(goalStatus(124, goal)).toBe('danger')
   })
 
@@ -401,7 +414,7 @@ describe('protein/fiber goals — stable for the whole day (mirrors the stableDa
     const fiberValues = hours.map(() => fiberGoalG(1929))
     expect(new Set(proteinValues).size).toBe(1)
     expect(new Set(fiberValues).size).toBe(1)
-    expect(proteinValues[0]).toBe(157)
+    expect(proteinValues[0]).toBe(196) // #966: default mode weight_loss = 2.0 g/kg (was 157)
     expect(fiberValues[0]).toBe(27)
   })
 })

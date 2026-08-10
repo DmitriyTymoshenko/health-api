@@ -24,6 +24,8 @@ const {
   goalKcalDelta,
   GOAL_MODES,
   DEFAULT_GOAL_MODE,
+  GOAL_KCAL_RULES,
+  PROTEIN_G_PER_KG_BY_GOAL,
 } = require('../../lib/nutrition-targets')
 
 /** The live profile as measured on 2026-08-09 (GET /api/profile). */
@@ -120,7 +122,7 @@ describe('DEFECT 3 — primary_goal is actually read by the math', () => {
     expect(stableDayKcalBasis({ ...base, primary_goal: 'maintenance' })).toBe(2429)
   })
 
-  it('each of the 4 modes produces its own basis (pre-fix: all four gave 1929)', () => {
+  it('each mode produces its own basis (pre-fix: all of them gave 1929)', () => {
     const byMode = GOAL_MODES.reduce((acc: Record<string, number>, goal: string) => {
       acc[goal] = stableDayKcalBasis({ ...base, primary_goal: goal })
       return acc
@@ -130,6 +132,10 @@ describe('DEFECT 3 — primary_goal is actually read by the math', () => {
       endurance: 1929, // status quo preserved on purpose — magnitude is #966, not #968
       maintenance: 2429,
       muscle_gain: 2672,
+      // #966 added `recomp` to GOAL_MODES (PROTEIN only). It has no GOAL_KCAL_RULES
+      // entry, so it falls through to the weight_loss rule — byte-identical to what a
+      // recomp profile produced before #966, when it normalised to weight_loss outright.
+      recomp: 1929,
     })
     expect(new Set(Object.values(byMode)).size).toBe(3) // three distinct bases, not one
   })
@@ -140,8 +146,25 @@ describe('DEFECT 3 — primary_goal is actually read by the math', () => {
   })
 
   it('an unknown/absent mode degrades to the default instead of throwing', () => {
-    expect(resolveGoalMode({ primary_goal: 'recomp' })).toBe(DEFAULT_GOAL_MODE)
+    // Was `recomp` until 2026-08-10; #966 promoted recomp to a real mode, so this
+    // assertion needed a genuinely unknown value to keep testing what it claims.
+    expect(resolveGoalMode({ primary_goal: 'bodybuilding' })).toBe(DEFAULT_GOAL_MODE)
     expect(resolveGoalMode(null)).toBe(DEFAULT_GOAL_MODE)
+    expect(stableDayKcalBasis({ ...base, primary_goal: 'bodybuilding' })).toBe(1929)
+  })
+
+  it('#966 — recomp is a KNOWN mode now: own protein coefficient, deliberately NO own kcal rule', () => {
+    expect(GOAL_MODES).toContain('recomp')
+    expect(resolveGoalMode({ primary_goal: 'recomp' })).toBe('recomp')
+    // Protein: its own number, the highest of the five (owner decision, #966).
+    expect(PROTEIN_G_PER_KG_BY_GOAL.recomp).toBe(2.2)
+    // Calories: the owner's #966 decision covers PROTEIN only. recomp is absent from
+    // GOAL_KCAL_RULES on purpose, so goalKcalDelta's `|| DEFAULT_GOAL_MODE` guard
+    // applies and the basis is unchanged. Characterization test: it pins a deliberate
+    // silent fallback as a visible fact, so a future kcal decision for recomp has to
+    // break this line consciously instead of drifting in.
+    expect(GOAL_KCAL_RULES.recomp).toBeUndefined()
+    expect(goalKcalDelta({ ...base, primary_goal: 'recomp' })).toBe(-500)
     expect(stableDayKcalBasis({ ...base, primary_goal: 'recomp' })).toBe(1929)
   })
 

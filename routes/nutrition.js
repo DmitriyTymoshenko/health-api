@@ -83,7 +83,7 @@ async function sendMealTelegramNotification(db, doc) {
 
     // Protein target: SINGLE SOURCE via resolveProteinGoalG (#961) — no more local
     // 150 g constant. Honours an explicit profile.daily_protein_goal_g override;
-    // otherwise auto-calculated from the latest weight_log entry (1.6 g/kg).
+    // otherwise auto-calculated from the latest weight_log entry x the goal mode's g/kg (#966).
     const latestWeightEntry = await db.collection('weight_log').findOne({}, { sort: { date: -1 } })
     const weightKg = resolveWeightKg(profile, latestWeightEntry?.weight_kg)
     const proteinTarget = resolveProteinGoalG(profile, weightKg) || 150 // last-resort guard: no weight data anywhere (fresh/empty DB) — avoid a divide-by-zero progress bar below
@@ -231,7 +231,7 @@ module.exports = function (getDB) {
       summary.sugar_goal_g = sugarLimitG(kcalBasis)
       summary.sugar_status = sugarStatus(summary.sugar_g, summary.sugar_goal_g)
 
-      // DAILY GOALS (#961) — protein (1.6 g/kg) and fiber (14 g/1000 kcal). These are
+      // DAILY GOALS (#961/#966) — protein (per-goal g/kg matrix) and fiber (14 g/1000 kcal). These are
       // targets to REACH, not ceilings to stay under, so they use goalStatus (the
       // inverse ladder of limitStatus), never satFatStatus/sugarStatus.
       // Math + weight resolution live in lib/nutrition-targets.js — SINGLE SOURCE,

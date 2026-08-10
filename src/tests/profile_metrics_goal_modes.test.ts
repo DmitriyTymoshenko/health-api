@@ -71,11 +71,33 @@ describe('GET /api/profile/metrics — goal modes must not crash the ETA', () =>
     // 98.2 - 96 = 2.2 kg -> 2.2 * 7700 / 500 = 33.88 -> 34 days
     expect(res.body.kg_to_goal).toBe(2.2)
     expect(res.body.days_to_goal).toBe(34)
-    expect(res.body.protein_recommended_g).toBe(157)
+    // #966: 157 (1.6 g/kg flat) -> 196 (weight_loss = 2.0 g/kg). This is the owner's
+    // expected change, stated in the #966 acceptance criteria, not a regression.
+    expect(res.body.protein_recommended_g).toBe(196)
+  })
+
+  it('#966 — protein_recommended_g follows the goal mode on THIS route too, not just /nutrition/summary', async () => {
+    // The point of this route-level test: proving `profile` is actually threaded into
+    // proteinGoalG() here. A lib-only test would still pass if this call site had been
+    // left as proteinGoalG(weight) — silently pinned to weight_loss on a screen the
+    // owner reads next to the summary (BASE RULE: one quantity, one answer).
+    const expected: Record<string, number> = {
+      weight_loss: 196, // 98.2 * 2.0
+      muscle_gain: 177, // 98.2 * 1.8
+      maintenance: 157, // 98.2 * 1.6
+      recomp: 216, // 98.2 * 2.2
+      endurance: 128, // 98.2 * 1.3
+    }
+    for (const [primary_goal, grams] of Object.entries(expected)) {
+      const app = makeApp({ ...LIVE_PROFILE, primary_goal })
+      const res = await request(app).get('/api/profile/metrics')
+      expect(res.status).toBe(200)
+      expect({ primary_goal, g: res.body.protein_recommended_g }).toEqual({ primary_goal, g: grams })
+    }
   })
 
   it('already at/below goal weight still reports 0 days in every mode', async () => {
-    for (const primary_goal of ['weight_loss', 'maintenance', 'muscle_gain', 'endurance']) {
+    for (const primary_goal of ['weight_loss', 'maintenance', 'muscle_gain', 'recomp', 'endurance']) {
       const app = makeApp({ ...LIVE_PROFILE, primary_goal }, 95)
       const res = await request(app).get('/api/profile/metrics')
       expect(res.status).toBe(200)

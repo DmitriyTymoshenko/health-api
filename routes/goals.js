@@ -74,18 +74,22 @@ module.exports = function (getDB) {
       const waterGoal = goalsData.find(g => g.type === 'water')
 
       // Protein streak threshold (#961): fallback is now proteinGoalG() — the same
-      // 1.6 g/kg auto-calc as /nutrition/summary — never the old hardcoded 180 g.
+      // auto-calc as /nutrition/summary — never the old hardcoded 180 g.
       // An explicit `goals` collection entry (type='protein') still wins outright;
       // that is this endpoint's OWN override layer and is separate from
       // profile.daily_protein_goal_g (resolveProteinGoalG's override), so this uses
       // the plain proteinGoalG(), not resolveProteinGoalG().
+      // #966: the coefficient is per goal mode now, so `profile` MUST be passed here
+      // too. Without it a `maintenance` profile would score its 90-day streak against
+      // 2.0 g/kg (196 g) while the summary screen showed that mode's real goal of
+      // 1.6 g/kg (157 g) — one day judged by two different thresholds (BASE RULE).
       const profile = await db.collection('personal_profile').findOne({ _type: 'profile' })
       const latestWeightEntry = await db.collection('weight_log').findOne({}, { sort: { date: -1 } })
       const weightKg = resolveWeightKg(profile, latestWeightEntry?.weight_kg)
 
       const goals = {
         calories_limit: caloriesGoal?.target_value || 2200,
-        protein_min: proteinGoal?.target_value || proteinGoalG(weightKg),
+        protein_min: proteinGoal?.target_value || proteinGoalG(weightKg, profile),
         water_min_ml: waterGoal?.target_value || 2500,
         steps_min: 10000,
         supplements_count: 8,
