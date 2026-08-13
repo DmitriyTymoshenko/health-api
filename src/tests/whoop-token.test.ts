@@ -1,20 +1,24 @@
 /**
  * whoop-token.test.ts — unit tests for the token-rotation logic in sync-whoop.js
  *
- * Covers every branch of the 2026-08-03 fix:
+ * Covers every branch of the 2026-08-03 fix PLUS the #1029 hardening (2026-08-13):
  *   1. clean rotation (2xx first try) — refresh_token_prev stashed
- *   2. 5xx → one retry → 5xx → TransientRefreshError (no blind 3×, no alert)
- *   3. 5xx → one retry → 2xx (Ory reuse-window recovery)
- *   4. 4xx (current) → 2xx (prev) → "recovered via prev token"
- *   5. 4xx (current) → 4xx (prev) → ReauthRequiredError + dedup alert ONCE
- *   6. 4xx, no prev → ReauthRequiredError + alert
- *   7. getToken threshold logic (15min window + 1h anti-churn + expired override)
- *   8. alertReauthIfDue dedup (≥24h gate)
+ *   2. network-level failure (no HTTP status) → one retry → still failing → Transient
+ *   3. pre-flight probe (#1029): gates the real refresh — 5xx/network on the probe
+ *      itself skips the real refresh entirely (real token never spent); 4xx/2xx on
+ *      the probe means proceed
+ *   4. 5xx on the REAL refresh (#1029): no same-token retry — treated exactly like
+ *      a 4xx, straight to refresh_token_prev
+ *   5. 4xx (current) → 2xx (prev) → "recovered via prev token"
+ *   6. 4xx (current) → 4xx (prev) → ReauthRequiredError + dedup alert ONCE
+ *   7. 4xx, no prev → ReauthRequiredError + alert
+ *   8. getToken threshold logic (15min window + 1h anti-churn + expired override)
+ *   9. alertReauthIfDue dedup (≥24h gate) + #1029 authorize-link in the alert text
  *
- * Each branch verified RED against the pre-fix file (see RED-verification step in
- * the task proof): the pre-fix sync-whoop.js has no TransientRefreshError, no
- * prev-token fallback, and a 3× blind retry — so the branch-specific assertions
- * below either fail to compile or fail to match.
+ * Each #1029 branch verified RED against the pre-#1029 file (see RED-verification
+ * step in the task proof): the pre-#1029 sync-whoop.js retries a 5xx with the SAME
+ * refresh_token and has no pre-flight probe — so the #1029-specific assertions
+ * below either fail to compile or fail to match against that version.
  */
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -22,7 +26,7 @@ const mod = require('../../scripts/sync-whoop')
 const { refreshToken, getToken, alertReauthIfDue, ReauthRequiredError, TransientRefreshError,
   REFRESH_THRESHOLD_MS, MIN_REFRESH_INTERVAL_MS, REAUTH_DEDUP_HOURS, RETRY_5XX_PAUSE_MS,
   DEFAULT_UA, buildRequestHeaders, captureSetCookie, cookieHeaderFor, resetCookieJar,
-  markSyncSuccess } = mod as {
+  markSyncSuccess, preflightProbe } = mod as {
     refreshToken: (c: any, deps?: any) => Promise<any>
     getToken: (deps?: any) => Promise<string>
     alertReauthIfDue: (detail: string, deps?: any) => Promise<boolean>
@@ -38,6 +42,7 @@ const { refreshToken, getToken, alertReauthIfDue, ReauthRequiredError, Transient
     cookieHeaderFor: (host: string) => string | null
     resetCookieJar: () => void
     markSyncSuccess: (deps?: any) => boolean
+    preflightProbe: (creds: any, d: any) => Promise<{ ok: boolean, detail?: string }>
   }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -75,6 +80,11 @@ function depsWith(http: ReturnType<typeof mockHttp>, over: Record<string, any> =
     log: jest.fn(),
     sleep: jest.fn(async (_ms: number) => {}),
     alertReauthIfDue: jest.fn(async () => true),
+    // #1029: default the probe to a no-op "edge is fine" stub so every EXISTING
+    // test below (written before the probe existed) keeps its exact http.calls
+    // count/ordering. The dedicated pre-flight describe block below overrides
+    // this with the REAL preflightProbe to exercise the probe itself.
+    preflightProbe: jest.fn(async () => ({ ok: true })),
     now: () => Date.parse('2026-08-03T10:00:00.000Z'), // 1h before token expiry
     ...over,
   }
@@ -97,10 +107,10 @@ describe('refreshToken — clean 2xx rotation', () => {
   })
 })
 
-// ── 2. 5xx → one retry → 5xx → TransientRefreshError (no alert, no write) ─────
-describe('refreshToken — persistent 5xx throws Transient (no blind 3×)', () => {
+// ── 2. Network-level failure (no HTTP status) → one retry → still failing ────
+describe('refreshToken — persistent network-level failure throws Transient (no blind 3×)', () => {
   it('retries ONCE after a SHORT (~5s) pause, then throws TransientRefreshError', async () => {
-    const http = mockHttp([{ err: 'HTTP 502: Bad Gateway' }, { err: 'HTTP 502: Bad Gateway' }])
+    const http = mockHttp([{ err: 'connect ECONNRESET' }, { err: 'connect ETIMEDOUT' }])
     const deps = depsWith(http)
     await expect(refreshToken(baseCreds(), deps)).rejects.toThrow(/WHOOP_REFRESH_TRANSIENT/)
 
@@ -109,40 +119,105 @@ describe('refreshToken — persistent 5xx throws Transient (no blind 3×)', () =
     // #904/C2: pause must be SHORT (≤10s) to land inside Ory's reuse window — 60s was a guaranteed miss
     expect(deps.sleep.mock.calls[0][0]).toBeLessThanOrEqual(10_000)
     expect(deps.writeCreds).not.toHaveBeenCalled()
-    expect(deps.alertReauthIfDue).not.toHaveBeenCalled() // 5xx is not a reauth crisis
+    expect(deps.alertReauthIfDue).not.toHaveBeenCalled() // no HTTP response is not a reauth crisis
   })
 
-  it('both attempts send the SAME refresh_token (no rotation between retries)', async () => {
-    const http = mockHttp([{ err: 'HTTP 503' }, { err: 'HTTP 503' }])
+  it('both attempts send the SAME refresh_token (nothing reached the origin, safe to retry)', async () => {
+    const http = mockHttp([{ err: 'connect ECONNRESET' }, { err: 'connect ECONNRESET' }])
     const deps = depsWith(http)
     await expect(refreshToken(baseCreds(), deps)).rejects.toThrow()
     expect(http.calls[0].body).toContain('refresh_token=RT_CUR')
     expect(http.calls[1].body).toContain('refresh_token=RT_CUR')
   })
-
-  it('network error (no HTTP code) is treated as transient → retry then Transient', async () => {
-    const http = mockHttp([{ err: 'connect ECONNRESET' }, { err: 'connect ETIMEDOUT' }])
-    const deps = depsWith(http)
-    await expect(refreshToken(baseCreds(), deps)).rejects.toThrow(/WHOOP_REFRESH_TRANSIENT/)
-    expect(deps.sleep).toHaveBeenCalledTimes(1)
-  })
 })
 
-// ── 3. 5xx → retry → 2xx (Ory reuse-window recovery) ─────────────────────────
-describe('refreshToken — 5xx then 2xx recovers via reuse window', () => {
-  it('pauses once, retries the same token, and persists the rotation', async () => {
+// ── 3. Real 5xx (#1029) → treated like a 4xx: NO same-token retry, straight to prev ──
+// This is the behavior FLIP from the 2026-08-03 fix: that version retried a 5xx
+// once with the same token (measured 0.9% success, 1/113, /var/log/whoop-sync.log
+// 09–13.08.2026 — 112 burned the prev-token fallback for nothing). A 5xx means a
+// response WAS received, so the one-shot token may already be spent server-side.
+describe('refreshToken — real 5xx is treated like 4xx (no same-token retry, straight to prev)', () => {
+  it('does NOT retry the current token on 502 — falls straight through to prev, no sleep', async () => {
     const http = mockHttp([
-      { err: 'HTTP 502: Bad Gateway' },
-      { data: { access_token: 'A2', refresh_token: 'RT_NEW', expires_in: 3600 } },
+      { err: 'HTTP 502: Bad Gateway' }, // current — no retry
+      { data: { access_token: 'A2', refresh_token: 'RT_NEW', expires_in: 3600 } }, // prev works
     ])
     const deps = depsWith(http)
     const out = await refreshToken(baseCreds(), deps)
 
     expect(out.access_token).toBe('A2')
     expect(out.refresh_token).toBe('RT_NEW')
-    expect(out.refresh_token_prev).toBe('RT_CUR')
-    expect(deps.sleep).toHaveBeenCalledTimes(1)
-    expect(deps.writeCreds).toHaveBeenCalledTimes(1)
+    expect(http.calls).toHaveLength(2) // current once, prev once — no 3rd (retry) call
+    expect(http.calls[0].body).toContain('refresh_token=RT_CUR')
+    expect(http.calls[1].body).toContain('refresh_token=RT_PREV')
+    expect(deps.sleep).not.toHaveBeenCalled() // no pause — no same-token retry happened
+  })
+
+  it('502 on current AND prev → ReauthRequiredError + dedup alert (same as 4xx+4xx)', async () => {
+    const http = mockHttp([{ err: 'HTTP 502: Bad Gateway' }, { err: 'HTTP 503: Service Unavailable' }])
+    const deps = depsWith(http)
+    await expect(refreshToken(baseCreds(), deps)).rejects.toThrow(/WHOOP_REAUTH_REQUIRED/)
+    expect(deps.alertReauthIfDue).toHaveBeenCalledTimes(1)
+    expect(deps.sleep).not.toHaveBeenCalled()
+  })
+})
+
+// ── 3b. Pre-flight probe (#1029): gates the real refresh ─────────────────────
+describe('preflightProbe — direct unit tests (mocked httpRequest, no network)', () => {
+  it('ok:true on a 4xx (Hydra alive, rejected the garbage token as expected)', async () => {
+    const http = mockHttp([{ err: 'HTTP 400: invalid_grant' }])
+    const result = await preflightProbe(baseCreds(), { httpRequest: http.fn })
+    expect(result.ok).toBe(true)
+  })
+
+  it('ok:true on an actual 2xx (bizarre, but the edge answered)', async () => {
+    const http = mockHttp([{ data: { access_token: 'ignored' } }])
+    const result = await preflightProbe(baseCreds(), { httpRequest: http.fn })
+    expect(result.ok).toBe(true)
+  })
+
+  it('ok:false on a 5xx (edge unhealthy — do not risk the real token)', async () => {
+    const http = mockHttp([{ err: 'HTTP 502: Bad Gateway' }])
+    const result = await preflightProbe(baseCreds(), { httpRequest: http.fn })
+    expect(result.ok).toBe(false)
+    expect(result.detail).toContain('502')
+  })
+
+  it('ok:false on a response-less network failure', async () => {
+    const http = mockHttp([{ err: 'connect ETIMEDOUT' }])
+    const result = await preflightProbe(baseCreds(), { httpRequest: http.fn })
+    expect(result.ok).toBe(false)
+  })
+
+  it('never sends the REAL refresh_token in the probe body', async () => {
+    const http = mockHttp([{ err: 'HTTP 400: invalid_grant' }])
+    await preflightProbe(baseCreds(), { httpRequest: http.fn })
+    expect(http.calls[0].body).not.toContain('refresh_token=RT_CUR')
+    expect(http.calls[0].body).toContain('refresh_token=preflight-')
+  })
+})
+
+describe('refreshToken — pre-flight probe gates the real refresh (integration, real preflightProbe)', () => {
+  it('probe 5xx → real refresh is NEVER attempted, real token never spent', async () => {
+    const http = mockHttp([{ err: 'HTTP 502: Bad Gateway' }])
+    const deps = depsWith(http, { preflightProbe })
+    await expect(refreshToken(baseCreds(), deps)).rejects.toThrow(/WHOOP_REFRESH_TRANSIENT/)
+    expect(http.calls).toHaveLength(1) // ONLY the probe — real refresh_token=RT_CUR was never sent
+    expect(http.calls[0].body).not.toContain('refresh_token=RT_CUR')
+    expect(deps.writeCreds).not.toHaveBeenCalled()
+  })
+
+  it('probe 4xx (edge reachable) → proceeds to spend the real token normally', async () => {
+    const http = mockHttp([
+      { err: 'HTTP 400: invalid_grant' }, // probe — garbage token correctly rejected
+      { data: { access_token: 'A2', refresh_token: 'RT_NEW', expires_in: 3600 } }, // real refresh
+    ])
+    const deps = depsWith(http, { preflightProbe })
+    const out = await refreshToken(baseCreds(), deps)
+    expect(out.access_token).toBe('A2')
+    expect(http.calls).toHaveLength(2)
+    expect(http.calls[0].body).toContain('refresh_token=preflight-')
+    expect(http.calls[1].body).toContain('refresh_token=RT_CUR')
   })
 })
 
@@ -278,6 +353,21 @@ describe('getToken — when to refresh', () => {
     expect(tok).toBe('ACCESS')
   })
 
+  // #1029 acceptance criterion (Apex, verbatim): "token_expires_at у майбутньому +
+  // запас ⇒ refresh НЕ викликається" — the anti-churn guard already exists
+  // (withinThreshold && !tooSoon); this pins the exact wording of the criterion
+  // as its own explicit test, distinct from the (equivalent) test just above.
+  it('#1029: token_expires_at is in the future with margin ⇒ refresh is NOT called', async () => {
+    // expires 11:00, now 10:00 → 60min margin ⇒ neither expired nor within the 15min threshold
+    const { deps, refresh } = tokenDeps({
+      readCreds: () => baseCreds({ token_expires_at: '2026-08-03T11:00:00.000Z' }),
+      now: () => Date.parse('2026-08-03T10:00:00.000Z'),
+    })
+    const tok = await getToken(deps)
+    expect(refresh).not.toHaveBeenCalled()
+    expect(tok).toBe('ACCESS')
+  })
+
   it('transient failure with token still valid → continues on current access_token', async () => {
     // expires 10:50, now 10:46 → within 15min threshold but NOT expired;
     // refreshToken throws TransientRefreshError → fall back to current access_token
@@ -312,7 +402,11 @@ describe('alertReauthIfDue — dedup', () => {
     now: () => Date.parse('2026-08-03T10:00:00.000Z'),
     readFile: () => { throw new Error('ENOENT') }, // no prior alert by default
     writeFile: jest.fn(),
-    sendTelegram: jest.fn(async () => true),
+    sendTelegram: jest.fn(async (_text: string) => true),
+    // #1029: stub creds/URL-builder so these dedup tests never touch the real
+    // /root/.config/whoop/whoop.json file — deterministic, no fs side effects.
+    readCreds: () => ({ client_id: 'cid' }),
+    buildAuthorizeUrl: jest.fn((c: any) => `https://api.prod.whoop.com/oauth/oauth2/auth?client_id=${c.client_id}`),
     ...over,
   })
 
@@ -357,6 +451,35 @@ describe('alertReauthIfDue — dedup', () => {
     await alertReauthIfDue('current 400; prev 400', d)
     const written = JSON.parse(d.writeFile.mock.calls[0][1])
     expect(written.last_state).toBe('fail')
+  })
+
+  // ── #1029: clickable authorize URL in the alert (no bare "run this command") ──
+  it('includes a tap-able authorize URL built via buildAuthorizeUrl, not just a CLI command', async () => {
+    const d = baseDeps()
+    await alertReauthIfDue('current 400; prev 400', d)
+    expect(d.buildAuthorizeUrl).toHaveBeenCalledWith({ client_id: 'cid' })
+    const text = d.sendTelegram.mock.calls[0][0]
+    expect(text).toContain('https://api.prod.whoop.com/oauth/oauth2/auth?client_id=cid')
+  })
+
+  it('never puts a token value in the alert text (only client_id via the URL)', async () => {
+    const d = baseDeps({
+      readCreds: () => ({ client_id: 'cid', client_secret: 'TOP_SECRET', refresh_token: 'RT_LIVE' }),
+    })
+    await alertReauthIfDue('current 400; prev 400', d)
+    const text = d.sendTelegram.mock.calls[0][0]
+    expect(text).not.toContain('TOP_SECRET')
+    expect(text).not.toContain('RT_LIVE')
+  })
+
+  it('falls back to the CLI instruction (no crash) if buildAuthorizeUrl throws', async () => {
+    const d = baseDeps({
+      buildAuthorizeUrl: () => { throw new Error('creds file unreadable') },
+    })
+    const sent = await alertReauthIfDue('current 400; prev 400', d)
+    expect(sent).toBe(true) // still alerts — degrades, doesn't crash
+    const text = d.sendTelegram.mock.calls[0][0]
+    expect(text).toContain('whoop-reauth.js')
   })
 })
 

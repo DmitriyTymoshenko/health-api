@@ -40,9 +40,37 @@
 // monitoring (12h) for the first time.
 // The token functions are exported with injectable deps so each branch is
 // unit-tested against a mocked HTTP layer (see src/tests/whoop-token.test.ts).
+//
+// ── 4th-time fix (#1029, 2026-08-13) ────────────────────────────────────────
+// The `*/30`→3×/day cadence change (#1028/#1030) removed the trigger, but the
+// mechanism 2. above measured 0.9% success in prod (1/113 runs recovered after
+// a first-attempt 5xx, /var/log/whoop-sync.log 09–13.08.2026 — 112 burned the
+// prev-token fallback for nothing). A 5xx means a response WAS received — the
+// request reached Cloudflare's edge (or further), so the one-shot token may
+// already be spent server-side; retrying it is a coin-flip that mostly loses.
+// Two more mechanisms close this:
+//   5. Pre-flight probe: before spending the REAL refresh_token, POST a
+//      deliberately-invalid one to the same token endpoint. This warms the
+//      TCP/TLS connection and the __cf_bm cookie on a throwaway token instead
+//      of the real one-shot token being Cloudflare's first impression of a
+//      cold client. A 4xx back (Hydra rejected garbage — expected) means the
+//      edge is reachable; proceed. A 5xx/network failure on the PROBE means
+//      the edge itself is down — skip the run entirely (TransientRefreshError)
+//      rather than risk the real token on a channel already failing.
+//   6. 502 (and any 5xx WITH an HTTP status, i.e. a response was received) is
+//      no longer in the same-token-retry allowlist for the `refresh_token`
+//      grant — it is handled exactly like a 4xx: no retry, straight to
+//      `refresh_token_prev`. Only a response-less network failure (no HTTP
+//      status at all — proof nothing reached the origin) still gets the single
+//      same-token retry, since that case cannot have consumed the token.
+// This makes mechanism 2 above effectively vestigial for the refresh_token
+// grant (it now only fires for true network-level failures); the code and its
+// tests keep both paths since the probe is still susceptible to a genuine
+// network blip.
 
 const https = require('https')
 const fs = require('fs')
+const { buildAuthorizeUrl } = require('./whoop-reauth.js')
 const { MongoClient } = require('mongodb')
 
 const CREDS_PATH = '/root/.config/whoop/whoop.json'
@@ -215,13 +243,16 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 // from BEFORE the recovery must not absorb the new failure. Lesson 2026-07-31 (66 silent
 // failures) is preserved: fail→fail still dedups to one message per 24h.
 // Writes {last_alerted_at, last_state} to REAUTH_DEDUP_PATH. Returns true if it sent.
-// `deps` (all optional): now, readFile, writeFile, sendTelegram — injected for unit tests.
+// `deps` (all optional): now, readFile, writeFile, sendTelegram, readCreds,
+// buildAuthorizeUrl — injected for unit tests.
 async function alertReauthIfDue(detail, deps) {
   const d = Object.assign({
     now: Date.now,
     readFile: (p) => fs.readFileSync(p, 'utf8'),
     writeFile: (p, c) => fs.writeFileSync(p, c),
     sendTelegram,
+    readCreds,
+    buildAuthorizeUrl, // #1029: reuse whoop-reauth.js's URL generation, don't duplicate it
   }, deps || {})
   let lastAlert = 0
   let lastState = null
@@ -243,11 +274,22 @@ async function alertReauthIfDue(detail, deps) {
   }
   const ts = new Date(d.now()).toISOString()
   log(`${REAUTH_MARKER}: ${detail} — alerting owner (${stateChanged ? 'state change ok→fail' : `reminder after ${REAUTH_DEDUP_HOURS}h`})`)
+  // #1029: a bare "run this command" is useless from a phone — build a tap-able
+  // authorize URL (reusing whoop-reauth.js, no duplicated generation). Never put
+  // a TOKEN in the message — client_id is not a secret in the OAuth-authorize
+  // sense and whoop-reauth.js already prints it today.
+  let linkLine = `Action: interactive re-auth needed (owner/Lisa) — run whoop-reauth.js.`
+  try {
+    const authUrl = d.buildAuthorizeUrl(d.readCreds())
+    linkLine = `Action: tap the link below (in a browser logged into WHOOP), then Approve:\n${authUrl}`
+  } catch (e) {
+    log(`WHOOP alert: could not build authorize URL (${e.message}) — falling back to CLI instruction`)
+  }
   const sent = await d.sendTelegram(
     `🚨 WHOOP sync requires re-authorization\n` +
     `Server ${ts}\n` +
     `Reason: ${detail}\n` +
-    `Action: interactive re-auth needed (owner/Lisa).\n` +
+    `${linkLine}\n` +
     `(dedup — next reminder in 24h)`
   )
   try {
@@ -317,17 +359,61 @@ function postRefresh(body, deps) {
   }, body)
 }
 
-// ── Core: refresh with single-5xx-retry + prev-token fallback + dedup alert ──
+// Pre-flight probe (#1029): POST a deliberately-invalid refresh_token to the
+// SAME token endpoint before ever spending the real one-shot token. This warms
+// the TCP/TLS connection and captures Cloudflare's __cf_bm cookie (via the
+// shared cookie jar in httpRequest) on a throwaway value instead of the real
+// token being the first packet a cold client sends. Classified from the same
+// signal as the real refresh (an HTTP status means the edge answered — good;
+// no status / a 5xx means the edge itself is unhealthy right now):
+//   - 4xx back (Hydra alive, rejected the garbage token — expected) → ok:true.
+//   - 2xx back (bizarre, but the edge clearly answered) → ok:true.
+//   - 5xx / network failure → ok:false: the caller must NOT risk the real
+//     one-shot token on a channel that is already failing.
+// Pure aside from the network call; exported for direct unit testing and as an
+// injectable dep of refreshToken (see depsWith default in the test file).
+async function preflightProbe(creds, d) {
+  const fakeToken = `preflight-${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`
+  const body = buildRefreshBody(fakeToken, creds)
+  try {
+    await postRefresh(body, d)
+    return { ok: true } // an actual 2xx on garbage input is bizarre but the edge is up
+  } catch (err) {
+    const status = Number((/^HTTP (\d+)/.exec(err.message) || [])[1])
+    if (Number.isNaN(status) || status >= 500) {
+      return { ok: false, detail: err.message.slice(0, 120) }
+    }
+    return { ok: true } // 4xx — reachable, warmed
+  }
+}
+
+// ── Core: pre-flight warm-up + prev-token fallback on ANY HTTP status + dedup alert ──
 // Exported for unit testing. `deps` injects httpRequest/readCreds/writeCreds/log/
-// sleep/alertReauthIfDue/now so tests are deterministic with no network or fs.
+// sleep/alertReauthIfDue/preflightProbe/now so tests are deterministic with no
+// network or fs.
 async function refreshToken(credsIn, deps) {
-  const d = Object.assign({ httpRequest, readCreds, writeCreds, log, sleep, alertReauthIfDue, now: Date.now }, deps || {})
+  const d = Object.assign({ httpRequest, readCreds, writeCreds, log, sleep, alertReauthIfDue, preflightProbe, now: Date.now }, deps || {})
   const creds = { ...credsIn }
   const sentToken = creds.refresh_token
 
+  // #1029: never let the real one-shot token be the first thing a cold
+  // connection sends to Cloudflare. If the edge is already failing on a
+  // throwaway probe token, bail out WITHOUT spending the real one — the next
+  // cron run tries again fresh, and the real token stays intact.
+  const probe = await d.preflightProbe(creds, d)
+  if (!probe.ok) {
+    d.log(`Pre-flight probe failed (${probe.detail}) — skipping real refresh this run to protect the one-shot token; retry next cron`)
+    throw new TransientRefreshError(`preflight probe failed: ${probe.detail}`)
+  }
+
   // At most two attempts on the SAME refresh_token: the first, and one retry
-  // after a 60s pause if it was a 5xx / network error (Ory may still return the
-  // cached rotation within its reuse window). A 4xx never retries the same token.
+  // after a short pause — but ONLY for a response-less network failure (no HTTP
+  // status at all, i.e. proof nothing reached the origin, so the token cannot
+  // have been consumed). Any HTTP status, INCLUDING 5xx, means a response WAS
+  // received — the one-shot token may already be spent server-side (measured
+  // 0.9% success retrying a 5xx with the same token, /var/log/whoop-sync.log
+  // 09–13.08.2026) — so it is handled exactly like a 4xx: no retry, straight to
+  // the refresh_token_prev fallback.
   for (let attempt = 1; attempt <= 2; attempt++) {
     const body = buildRefreshBody(creds.refresh_token, creds)
     let resp
@@ -335,16 +421,17 @@ async function refreshToken(credsIn, deps) {
       resp = await postRefresh(body, d)
     } catch (err) {
       const status = Number((/^HTTP (\d+)/.exec(err.message) || [])[1])
-      const transient = Number.isNaN(status) || status >= 500
-      if (transient) {
+      const networkLevel = Number.isNaN(status) // no HTTP status = nothing reached the origin
+      if (networkLevel) {
         if (attempt === 1) {
-          d.log(`Refresh attempt 1 transient (${err.message.slice(0, 80)}) — pausing ${Math.round(RETRY_5XX_PAUSE_MS / 1000)}s for one retry`)
+          d.log(`Refresh attempt 1 network-level failure (${err.message.slice(0, 80)}) — pausing ${Math.round(RETRY_5XX_PAUSE_MS / 1000)}s for one retry`)
           await d.sleep(RETRY_5XX_PAUSE_MS)
-          continue // attempt 2, SAME refresh_token
+          continue // attempt 2, SAME refresh_token — safe, nothing was sent successfully
         }
         throw new TransientRefreshError(`persistent ${err.message.slice(0, 80)} after retry`)
       }
-      // 4xx: token rejected — fall through to prev-token fallback (no retry of the same token)
+      // Any HTTP status (4xx OR 5xx): token possibly already consumed — fall
+      // through to prev-token fallback, no retry of the same token.
       return await recoverViaPrev(creds, sentToken, `HTTP ${status}`, d)
     }
     // success
@@ -754,7 +841,8 @@ async function main() {
 // Export the token layer for unit tests (see src/tests/whoop-token.test.ts).
 module.exports = { refreshToken, getToken, alertReauthIfDue, markSyncSuccess, ReauthRequiredError, TransientRefreshError,
   REFRESH_THRESHOLD_MS, MIN_REFRESH_INTERVAL_MS, REAUTH_DEDUP_HOURS, RETRY_5XX_PAUSE_MS,
-  DEFAULT_UA, buildRequestHeaders, captureSetCookie, cookieHeaderFor, resetCookieJar, buildMetricsDoc }
+  DEFAULT_UA, buildRequestHeaders, captureSetCookie, cookieHeaderFor, resetCookieJar, buildMetricsDoc,
+  preflightProbe }
 
 // Run only when invoked directly, not when required by a test.
 if (require.main === module) {
