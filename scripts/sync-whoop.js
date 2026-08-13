@@ -438,6 +438,43 @@ function toDateStr(d) {
   return `${y}-${m}-${day}`
 }
 
+// Pure: build the denormalized daily_metrics doc from the three source-collection
+// docs (same shape as what's stored in whoop_cycles/whoop_recovery/whoop_sleep —
+// i.e. the `cycleResult`/`recoveryResult`/`sleepResult` locals in syncDate()).
+// Exported so callers other than the live sync (e.g. one-off Mongo backfills) reuse
+// the EXACT prod mapping instead of re-deriving it in parallel (closes the Medium
+// finding from #1024 — this builder was inline-only and untestable/unreusable).
+function buildMetricsDoc(dateStr, now, { cycleResult, recoveryResult, sleepResult }) {
+  const metricsDoc = { date: dateStr, synced_at: now }
+  if (cycleResult) {
+    if (cycleResult.strain !== null) metricsDoc.strain = cycleResult.strain
+    if (cycleResult.calories_burned !== null) metricsDoc.calories_burned = cycleResult.calories_burned
+    if (cycleResult.avg_heart_rate !== null) metricsDoc.avg_heart_rate = cycleResult.avg_heart_rate
+    if (cycleResult.max_heart_rate !== null) metricsDoc.max_heart_rate = cycleResult.max_heart_rate
+  }
+  if (recoveryResult) {
+    if (recoveryResult.recovery_score !== null) metricsDoc.recovery_score = recoveryResult.recovery_score
+    if (recoveryResult.hrv_rmssd !== null) metricsDoc.hrv_rmssd = recoveryResult.hrv_rmssd
+    if (recoveryResult.resting_heart_rate !== null) metricsDoc.resting_heart_rate = recoveryResult.resting_heart_rate
+    if (recoveryResult.spo2_percentage !== null) metricsDoc.spo2_percentage = recoveryResult.spo2_percentage
+    if (recoveryResult.skin_temp_celsius !== null) metricsDoc.skin_temp_celsius = recoveryResult.skin_temp_celsius
+  }
+  if (sleepResult) {
+    if (sleepResult.sleep_hours !== null) metricsDoc.sleep_hours = sleepResult.sleep_hours
+    if (sleepResult.total_light_sleep_ms !== null) metricsDoc.sleep_light_hours = Math.round((sleepResult.total_light_sleep_ms / 3600000) * 10) / 10
+    if (sleepResult.total_sws_ms !== null) metricsDoc.sleep_deep_hours = Math.round((sleepResult.total_sws_ms / 3600000) * 10) / 10
+    if (sleepResult.total_rem_ms !== null) metricsDoc.sleep_rem_hours = Math.round((sleepResult.total_rem_ms / 3600000) * 10) / 10
+    if (sleepResult.disturbance_count !== null) metricsDoc.sleep_disturbance_count = sleepResult.disturbance_count
+    if (sleepResult.sleep_cycle_count !== null) metricsDoc.sleep_cycle_count = sleepResult.sleep_cycle_count
+    if (sleepResult.sleep_performance !== null) metricsDoc.sleep_performance = sleepResult.sleep_performance
+    if (sleepResult.sleep_needed_hours !== null) metricsDoc.sleep_needed_hours = sleepResult.sleep_needed_hours
+    if (sleepResult.sleep_consistency !== null) metricsDoc.sleep_consistency = sleepResult.sleep_consistency
+    if (sleepResult.sleep_efficiency !== null) metricsDoc.sleep_efficiency = sleepResult.sleep_efficiency
+    if (sleepResult.respiratory_rate !== null) metricsDoc.respiratory_rate = sleepResult.respiratory_rate
+  }
+  return metricsDoc
+}
+
 async function syncDate(db, token, dateStr) {
   const { start, end } = dateRange(dateStr)
   const now = new Date().toISOString()
@@ -626,33 +663,7 @@ async function syncDate(db, token, dateStr) {
 
   // ── Upsert daily_metrics (denormalized view for /api/metrics) ──
   try {
-    const metricsDoc = { date: dateStr, synced_at: now }
-    if (cycleResult) {
-      if (cycleResult.strain !== null) metricsDoc.strain = cycleResult.strain
-      if (cycleResult.calories_burned !== null) metricsDoc.calories_burned = cycleResult.calories_burned
-      if (cycleResult.avg_heart_rate !== null) metricsDoc.avg_heart_rate = cycleResult.avg_heart_rate
-      if (cycleResult.max_heart_rate !== null) metricsDoc.max_heart_rate = cycleResult.max_heart_rate
-    }
-    if (recoveryResult) {
-      if (recoveryResult.recovery_score !== null) metricsDoc.recovery_score = recoveryResult.recovery_score
-      if (recoveryResult.hrv_rmssd !== null) metricsDoc.hrv_rmssd = recoveryResult.hrv_rmssd
-      if (recoveryResult.resting_heart_rate !== null) metricsDoc.resting_heart_rate = recoveryResult.resting_heart_rate
-      if (recoveryResult.spo2_percentage !== null) metricsDoc.spo2_percentage = recoveryResult.spo2_percentage
-      if (recoveryResult.skin_temp_celsius !== null) metricsDoc.skin_temp_celsius = recoveryResult.skin_temp_celsius
-    }
-    if (sleepResult) {
-      if (sleepResult.sleep_hours !== null) metricsDoc.sleep_hours = sleepResult.sleep_hours
-      if (sleepResult.total_light_sleep_ms !== null) metricsDoc.sleep_light_hours = Math.round((sleepResult.total_light_sleep_ms / 3600000) * 10) / 10
-      if (sleepResult.total_sws_ms !== null) metricsDoc.sleep_deep_hours = Math.round((sleepResult.total_sws_ms / 3600000) * 10) / 10
-      if (sleepResult.total_rem_ms !== null) metricsDoc.sleep_rem_hours = Math.round((sleepResult.total_rem_ms / 3600000) * 10) / 10
-      if (sleepResult.disturbance_count !== null) metricsDoc.sleep_disturbance_count = sleepResult.disturbance_count
-      if (sleepResult.sleep_cycle_count !== null) metricsDoc.sleep_cycle_count = sleepResult.sleep_cycle_count
-      if (sleepResult.sleep_performance !== null) metricsDoc.sleep_performance = sleepResult.sleep_performance
-      if (sleepResult.sleep_needed_hours !== null) metricsDoc.sleep_needed_hours = sleepResult.sleep_needed_hours
-      if (sleepResult.sleep_consistency !== null) metricsDoc.sleep_consistency = sleepResult.sleep_consistency
-      if (sleepResult.sleep_efficiency !== null) metricsDoc.sleep_efficiency = sleepResult.sleep_efficiency
-      if (sleepResult.respiratory_rate !== null) metricsDoc.respiratory_rate = sleepResult.respiratory_rate
-    }
+    const metricsDoc = buildMetricsDoc(dateStr, now, { cycleResult, recoveryResult, sleepResult })
     await db.collection('daily_metrics').updateOne(
       { date: dateStr },
       { $set: metricsDoc },
@@ -743,7 +754,7 @@ async function main() {
 // Export the token layer for unit tests (see src/tests/whoop-token.test.ts).
 module.exports = { refreshToken, getToken, alertReauthIfDue, markSyncSuccess, ReauthRequiredError, TransientRefreshError,
   REFRESH_THRESHOLD_MS, MIN_REFRESH_INTERVAL_MS, REAUTH_DEDUP_HOURS, RETRY_5XX_PAUSE_MS,
-  DEFAULT_UA, buildRequestHeaders, captureSetCookie, cookieHeaderFor, resetCookieJar }
+  DEFAULT_UA, buildRequestHeaders, captureSetCookie, cookieHeaderFor, resetCookieJar, buildMetricsDoc }
 
 // Run only when invoked directly, not when required by a test.
 if (require.main === module) {
