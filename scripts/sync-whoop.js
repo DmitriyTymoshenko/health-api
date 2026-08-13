@@ -642,6 +642,11 @@ async function syncDate(db, token, dateStr) {
     }
     if (sleepResult) {
       if (sleepResult.sleep_hours !== null) metricsDoc.sleep_hours = sleepResult.sleep_hours
+      if (sleepResult.total_light_sleep_ms !== null) metricsDoc.sleep_light_hours = Math.round((sleepResult.total_light_sleep_ms / 3600000) * 10) / 10
+      if (sleepResult.total_sws_ms !== null) metricsDoc.sleep_deep_hours = Math.round((sleepResult.total_sws_ms / 3600000) * 10) / 10
+      if (sleepResult.total_rem_ms !== null) metricsDoc.sleep_rem_hours = Math.round((sleepResult.total_rem_ms / 3600000) * 10) / 10
+      if (sleepResult.disturbance_count !== null) metricsDoc.sleep_disturbance_count = sleepResult.disturbance_count
+      if (sleepResult.sleep_cycle_count !== null) metricsDoc.sleep_cycle_count = sleepResult.sleep_cycle_count
       if (sleepResult.sleep_performance !== null) metricsDoc.sleep_performance = sleepResult.sleep_performance
       if (sleepResult.sleep_needed_hours !== null) metricsDoc.sleep_needed_hours = sleepResult.sleep_needed_hours
       if (sleepResult.sleep_consistency !== null) metricsDoc.sleep_consistency = sleepResult.sleep_consistency

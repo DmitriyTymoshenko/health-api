@@ -427,6 +427,52 @@ describe('sync-whoop — null protection: hasSleepScores', () => {
   })
 })
 
+describe('sync-whoop — daily_metrics sleep stage flattening', () => {
+  function copySleepFieldsToMetrics(sleepResult: Record<string, number | null>): Record<string, number> {
+    const metricsDoc: Record<string, number> = {}
+    if (sleepResult.sleep_hours !== null) metricsDoc.sleep_hours = sleepResult.sleep_hours
+    if (sleepResult.total_light_sleep_ms !== null) metricsDoc.sleep_light_hours = Math.round((sleepResult.total_light_sleep_ms / 3600000) * 10) / 10
+    if (sleepResult.total_sws_ms !== null) metricsDoc.sleep_deep_hours = Math.round((sleepResult.total_sws_ms / 3600000) * 10) / 10
+    if (sleepResult.total_rem_ms !== null) metricsDoc.sleep_rem_hours = Math.round((sleepResult.total_rem_ms / 3600000) * 10) / 10
+    if (sleepResult.disturbance_count !== null) metricsDoc.sleep_disturbance_count = sleepResult.disturbance_count
+    if (sleepResult.sleep_cycle_count !== null) metricsDoc.sleep_cycle_count = sleepResult.sleep_cycle_count
+    return metricsDoc
+  }
+
+  it('copies sleep stage breakdown to daily_metrics in hours and counts', () => {
+    const result = copySleepFieldsToMetrics({
+      sleep_hours: 7.8,
+      total_light_sleep_ms: 16200000,
+      total_sws_ms: 5400000,
+      total_rem_ms: 6660000,
+      disturbance_count: 12,
+      sleep_cycle_count: 5,
+    })
+
+    expect(result).toEqual({
+      sleep_hours: 7.8,
+      sleep_light_hours: 4.5,
+      sleep_deep_hours: 1.5,
+      sleep_rem_hours: 1.9,
+      sleep_disturbance_count: 12,
+      sleep_cycle_count: 5,
+    })
+  })
+
+  it('does not write sleep stage fields when source values are null', () => {
+    const result = copySleepFieldsToMetrics({
+      sleep_hours: null,
+      total_light_sleep_ms: null,
+      total_sws_ms: null,
+      total_rem_ms: null,
+      disturbance_count: null,
+      sleep_cycle_count: null,
+    })
+
+    expect(result).toEqual({})
+  })
+})
+
 describe('toDateStr — date formatting', () => {
   it('formats date as YYYY-MM-DD', () => {
     const d = new Date('2026-04-17T00:00:00')
