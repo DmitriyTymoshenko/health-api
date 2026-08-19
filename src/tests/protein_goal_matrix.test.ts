@@ -183,3 +183,5 @@ describe('#966 REGRESSION — only the protein goal moves', () => {
     expect(resolveProteinGoalG(profileFor('weight_loss'), weightKg)).toBe(196)
   })
 })
+
+export {};

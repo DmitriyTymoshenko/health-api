@@ -418,3 +418,5 @@ describe('protein/fiber goals — stable for the whole day (mirrors the stableDa
     expect(fiberValues[0]).toBe(27)
   })
 })
+
+export {};

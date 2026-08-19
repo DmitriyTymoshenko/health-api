@@ -105,3 +105,5 @@ describe('GET /api/profile/metrics — goal modes must not crash the ETA', () =>
     }
   })
 })
+
+export {};

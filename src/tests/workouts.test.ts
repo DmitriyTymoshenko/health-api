@@ -235,3 +235,5 @@ describe('DEFAULT_EXERCISES constants', () => {
     expect(exercise.equipment).toBe('barbell')
   })
 })
+
+export {};

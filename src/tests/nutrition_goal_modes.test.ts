@@ -173,3 +173,5 @@ describe('DEFECT 3 — primary_goal is actually read by the math', () => {
     expect(stableDayKcalBasis({ ...base, primary_goal: 'maintenance', daily_kcal_goal: 2000 })).toBe(2000)
   })
 })
+
+export {};

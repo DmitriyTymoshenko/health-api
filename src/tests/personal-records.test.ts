@@ -165,3 +165,5 @@ describe('PR detection logic', () => {
     expect(volPR!.value).toBe(2020)
   })
 })
+
+export {};
