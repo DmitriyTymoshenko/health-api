@@ -256,3 +256,5 @@ describe('REFERENCE_RANGES — sanity checks', () => {
     expect(ref.max).toBe(4.0)
   })
 })
+
+export {};

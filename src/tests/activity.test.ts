@@ -142,3 +142,5 @@ describe('activity — pagination defaults', () => {
     expect(typeof parseLimit('10', 50)).toBe('number')
   })
 })
+
+export {};

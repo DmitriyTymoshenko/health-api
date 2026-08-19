@@ -199,3 +199,5 @@ describe('analyzeWeightTrend — planned_per_week is always negative', () => {
     expect(r1000.planned_per_week).toBeLessThan(r500.planned_per_week)
   })
 })
+
+export {};

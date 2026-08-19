@@ -92,3 +92,5 @@ describe('body measurements — typical values sanity', () => {
     expect(Math.round(bmi * 10) / 10).toBe(25.9) // 89.5 / (1.86²) = 25.87 ≈ 25.9
   })
 })
+
+export {};

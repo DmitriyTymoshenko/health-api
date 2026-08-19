@@ -484,3 +484,5 @@ describe('toDateStr — date formatting', () => {
     expect(toDateStr(d)).toBe('2026-01-05')
   })
 })
+
+export {};

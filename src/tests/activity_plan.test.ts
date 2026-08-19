@@ -213,3 +213,5 @@ describe('buildActivityPlanDoc — defaults', () => {
     expect(doc.calories_est).toBe(350)
   })
 })
+
+export {};

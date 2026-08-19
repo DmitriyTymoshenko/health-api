@@ -116,3 +116,5 @@ describe('calcStreak — edge cases', () => {
     expect(result.best).toBe(0)
   })
 })
+
+export {};

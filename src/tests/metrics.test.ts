@@ -141,3 +141,5 @@ describe('metrics — health data ranges sanity', () => {
     expect(spo2).toBeLessThanOrEqual(100)
   })
 })
+
+export {};

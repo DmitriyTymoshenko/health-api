@@ -77,3 +77,5 @@ describe('steps validation', () => {
     expect(result.source).toBe('apple_health')
   })
 })
+
+export {};

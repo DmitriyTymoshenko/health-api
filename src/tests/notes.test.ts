@@ -149,3 +149,5 @@ describe('normalizeNoteDoc — POST body normalization', () => {
     expect(doc.energy).toBe(7)
   })
 })
+
+export {};

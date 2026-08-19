@@ -144,3 +144,5 @@ describe('weeksToTarget — goal timeline', () => {
     expect(weeksToTarget(100, 90, -0.5)).toBeNull()
   })
 })
+
+export {};

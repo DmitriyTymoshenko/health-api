@@ -43,3 +43,5 @@ describe('GET /api/version', () => {
     expect(pkg.version).toMatch(/^\d+\.\d+\.\d+$/)
   })
 })
+
+export {};

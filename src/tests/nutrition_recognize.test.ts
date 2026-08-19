@@ -92,3 +92,5 @@ describe('parseGeminiResponse — end-to-end response parsing', () => {
     expect(parseGeminiResponse({})).toEqual([])
   })
 })
+
+export {};

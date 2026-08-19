@@ -133,3 +133,5 @@ describe('aggregateDay — the #862 regression: legacy nested-items records must
     expect(summary).toMatchObject({ kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, items: 0 })
   })
 })
+
+export {};

@@ -200,3 +200,5 @@ describe('normalizeFoodForLibrary — library entry normalization', () => {
     expect(food.protein_per_100g).toBe(13)
   })
 })
+
+export {};

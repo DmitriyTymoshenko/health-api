@@ -80,3 +80,5 @@ describe('expectedPctByHour', () => {
     expect(expectedPctByHour(23)).toBe(100)
   })
 })
+
+export {};
