@@ -531,6 +531,35 @@ function toDateStr(d) {
 // Exported so callers other than the live sync (e.g. one-off Mongo backfills) reuse
 // the EXACT prod mapping instead of re-deriving it in parallel (closes the Medium
 // finding from #1024 — this builder was inline-only and untestable/unreusable).
+// #1024 (Low): pure tiebreak between two nap:false sleep docs for the SAME date —
+// keeps the LONGEST total_sleep_ms, matching scripts/backfill-sleep-stage-1021.js:26
+// (approved by Dmytro). `current` may be null (first doc for the date always wins).
+function pickLongerSleep(current, candidate) {
+  if (!current) return candidate
+  return (candidate.total_sleep_ms ?? -1) > (current.total_sleep_ms ?? -1) ? candidate : current
+}
+
+// #1024: extracted so the sleep→daily_metrics flattening logic has exactly ONE
+// implementation, imported by both sync-whoop.js (production) and whoop.test.ts
+// (regression guard) — previously the test carried a hand-copied duplicate that
+// could not detect a regression in this exact block.
+function buildSleepMetricFields(sleepResult) {
+  const fields = {}
+  if (!sleepResult) return fields
+  if (sleepResult.sleep_hours !== null) fields.sleep_hours = sleepResult.sleep_hours
+  if (sleepResult.total_light_sleep_ms !== null) fields.sleep_light_hours = Math.round((sleepResult.total_light_sleep_ms / 3600000) * 10) / 10
+  if (sleepResult.total_sws_ms !== null) fields.sleep_deep_hours = Math.round((sleepResult.total_sws_ms / 3600000) * 10) / 10
+  if (sleepResult.total_rem_ms !== null) fields.sleep_rem_hours = Math.round((sleepResult.total_rem_ms / 3600000) * 10) / 10
+  if (sleepResult.disturbance_count !== null) fields.sleep_disturbance_count = sleepResult.disturbance_count
+  if (sleepResult.sleep_cycle_count !== null) fields.sleep_cycle_count = sleepResult.sleep_cycle_count
+  if (sleepResult.sleep_performance !== null) fields.sleep_performance = sleepResult.sleep_performance
+  if (sleepResult.sleep_needed_hours !== null) fields.sleep_needed_hours = sleepResult.sleep_needed_hours
+  if (sleepResult.sleep_consistency !== null) fields.sleep_consistency = sleepResult.sleep_consistency
+  if (sleepResult.sleep_efficiency !== null) fields.sleep_efficiency = sleepResult.sleep_efficiency
+  if (sleepResult.respiratory_rate !== null) fields.respiratory_rate = sleepResult.respiratory_rate
+  return fields
+}
+
 function buildMetricsDoc(dateStr, now, { cycleResult, recoveryResult, sleepResult }) {
   const metricsDoc = { date: dateStr, synced_at: now }
   if (cycleResult) {
@@ -546,19 +575,7 @@ function buildMetricsDoc(dateStr, now, { cycleResult, recoveryResult, sleepResul
     if (recoveryResult.spo2_percentage !== null) metricsDoc.spo2_percentage = recoveryResult.spo2_percentage
     if (recoveryResult.skin_temp_celsius !== null) metricsDoc.skin_temp_celsius = recoveryResult.skin_temp_celsius
   }
-  if (sleepResult) {
-    if (sleepResult.sleep_hours !== null) metricsDoc.sleep_hours = sleepResult.sleep_hours
-    if (sleepResult.total_light_sleep_ms !== null) metricsDoc.sleep_light_hours = Math.round((sleepResult.total_light_sleep_ms / 3600000) * 10) / 10
-    if (sleepResult.total_sws_ms !== null) metricsDoc.sleep_deep_hours = Math.round((sleepResult.total_sws_ms / 3600000) * 10) / 10
-    if (sleepResult.total_rem_ms !== null) metricsDoc.sleep_rem_hours = Math.round((sleepResult.total_rem_ms / 3600000) * 10) / 10
-    if (sleepResult.disturbance_count !== null) metricsDoc.sleep_disturbance_count = sleepResult.disturbance_count
-    if (sleepResult.sleep_cycle_count !== null) metricsDoc.sleep_cycle_count = sleepResult.sleep_cycle_count
-    if (sleepResult.sleep_performance !== null) metricsDoc.sleep_performance = sleepResult.sleep_performance
-    if (sleepResult.sleep_needed_hours !== null) metricsDoc.sleep_needed_hours = sleepResult.sleep_needed_hours
-    if (sleepResult.sleep_consistency !== null) metricsDoc.sleep_consistency = sleepResult.sleep_consistency
-    if (sleepResult.sleep_efficiency !== null) metricsDoc.sleep_efficiency = sleepResult.sleep_efficiency
-    if (sleepResult.respiratory_rate !== null) metricsDoc.respiratory_rate = sleepResult.respiratory_rate
-  }
+  Object.assign(metricsDoc, buildSleepMetricFields(sleepResult))
   return metricsDoc
 }
 
@@ -695,7 +712,12 @@ async function syncDate(db, token, dateStr) {
         { $set: sleepSetDoc },
         { upsert: true }
       )
-      sleepResult = doc
+      // #1024 (Low): when the API returns >1 nap:false sleep for the same date,
+      // keep the LONGEST total_sleep_ms for daily_metrics — same tiebreak the
+      // #1021 backfill already applies (scripts/backfill-sleep-stage-1021.js:26),
+      // approved by Dmytro. Every doc still gets upserted into whoop_sleep above
+      // by its own sleep_id; only the daily_metrics feeder (sleepResult) picks one.
+      sleepResult = pickLongerSleep(sleepResult, doc)
     }
   } catch (e) {
     log(`  [sleep] ${dateStr} error: ${e.message}`)
@@ -841,7 +863,7 @@ async function main() {
 // Export the token layer for unit tests (see src/tests/whoop-token.test.ts).
 module.exports = { refreshToken, getToken, alertReauthIfDue, markSyncSuccess, ReauthRequiredError, TransientRefreshError,
   REFRESH_THRESHOLD_MS, MIN_REFRESH_INTERVAL_MS, REAUTH_DEDUP_HOURS, RETRY_5XX_PAUSE_MS,
-  DEFAULT_UA, buildRequestHeaders, captureSetCookie, cookieHeaderFor, resetCookieJar, buildMetricsDoc,
+  DEFAULT_UA, buildRequestHeaders, captureSetCookie, cookieHeaderFor, resetCookieJar, buildMetricsDoc, buildSleepMetricFields, pickLongerSleep,
   preflightProbe }
 
 // Run only when invoked directly, not when required by a test.

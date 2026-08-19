@@ -428,19 +428,36 @@ describe('sync-whoop — null protection: hasSleepScores', () => {
 })
 
 describe('sync-whoop — daily_metrics sleep stage flattening', () => {
-  function copySleepFieldsToMetrics(sleepResult: Record<string, number | null>): Record<string, number> {
-    const metricsDoc: Record<string, number> = {}
-    if (sleepResult.sleep_hours !== null) metricsDoc.sleep_hours = sleepResult.sleep_hours
-    if (sleepResult.total_light_sleep_ms !== null) metricsDoc.sleep_light_hours = Math.round((sleepResult.total_light_sleep_ms / 3600000) * 10) / 10
-    if (sleepResult.total_sws_ms !== null) metricsDoc.sleep_deep_hours = Math.round((sleepResult.total_sws_ms / 3600000) * 10) / 10
-    if (sleepResult.total_rem_ms !== null) metricsDoc.sleep_rem_hours = Math.round((sleepResult.total_rem_ms / 3600000) * 10) / 10
-    if (sleepResult.disturbance_count !== null) metricsDoc.sleep_disturbance_count = sleepResult.disturbance_count
-    if (sleepResult.sleep_cycle_count !== null) metricsDoc.sleep_cycle_count = sleepResult.sleep_cycle_count
-    return metricsDoc
+  // #1024 (Medium): import the REAL production function instead of a hand-copied
+  // duplicate — a local mirror of scripts/sync-whoop.js's sleep-flattening block
+  // could never detect a regression in that exact block (proven true: see the
+  // red-first mutation test below, which fails when this import is swapped back
+  // for a local copy).
+  const { buildSleepMetricFields } = require('../../scripts/sync-whoop')
+
+  // sleepResult always carries every one of these keys in production (see the
+  // `doc` object built in syncDate(), scripts/sync-whoop.js) — passing a partial
+  // object here would silently leak `undefined` fields into the result, because
+  // buildSleepMetricFields (like buildMetricsDoc) checks `!== null`, not
+  // `!== null && !== undefined` (pre-existing, documented quirk, not this
+  // ticket's scope to fix).
+  const NULL_SLEEP_RESULT = {
+    sleep_hours: null,
+    total_light_sleep_ms: null,
+    total_sws_ms: null,
+    total_rem_ms: null,
+    disturbance_count: null,
+    sleep_cycle_count: null,
+    sleep_performance: null,
+    sleep_needed_hours: null,
+    sleep_consistency: null,
+    sleep_efficiency: null,
+    respiratory_rate: null,
   }
 
   it('copies sleep stage breakdown to daily_metrics in hours and counts', () => {
-    const result = copySleepFieldsToMetrics({
+    const result = buildSleepMetricFields({
+      ...NULL_SLEEP_RESULT,
       sleep_hours: 7.8,
       total_light_sleep_ms: 16200000,
       total_sws_ms: 5400000,
@@ -460,16 +477,60 @@ describe('sync-whoop — daily_metrics sleep stage flattening', () => {
   })
 
   it('does not write sleep stage fields when source values are null', () => {
-    const result = copySleepFieldsToMetrics({
-      sleep_hours: null,
-      total_light_sleep_ms: null,
-      total_sws_ms: null,
-      total_rem_ms: null,
-      disturbance_count: null,
-      sleep_cycle_count: null,
-    })
+    const result = buildSleepMetricFields({ ...NULL_SLEEP_RESULT })
 
     expect(result).toEqual({})
+  })
+
+  it('mirrors the FULL production shape, not just the historically-tested subset (#1024)', () => {
+    const result = buildSleepMetricFields({
+      ...NULL_SLEEP_RESULT,
+      sleep_performance: 87,
+      sleep_needed_hours: 8.2,
+      sleep_consistency: 74,
+      sleep_efficiency: 91,
+      respiratory_rate: 15.4,
+    })
+
+    expect(result).toEqual({
+      sleep_performance: 87,
+      sleep_needed_hours: 8.2,
+      sleep_consistency: 74,
+      sleep_efficiency: 91,
+      respiratory_rate: 15.4,
+    })
+  })
+})
+
+describe('sync-whoop — same-date sleep tiebreak (#1024 Low)', () => {
+  // #1024 (Low): sync-whoop.js used to keep the LAST doc the WHOOP API returned
+  // for a date with >1 nap:false sleep; the #1021 backfill instead keeps the
+  // LONGEST total_sleep_ms (Dmytro-approved rule). This aligns sync with the
+  // backfill so a future re-sync of a duplicate-sleep date can't silently
+  // overwrite history with a different rule than the one already applied.
+  const { pickLongerSleep } = require('../../scripts/sync-whoop')
+
+  it('keeps the first doc when it is the only one', () => {
+    const doc = { sleep_id: 'a', total_sleep_ms: 5000 }
+    expect(pickLongerSleep(null, doc)).toBe(doc)
+  })
+
+  it('keeps the longer total_sleep_ms when a second doc arrives', () => {
+    const shorter = { sleep_id: 'a', total_sleep_ms: 5000 }
+    const longer = { sleep_id: 'b', total_sleep_ms: 34200000 } // 9.5h, the #1021 2026-04-26 case
+    expect(pickLongerSleep(shorter, longer)).toBe(longer)
+  })
+
+  it('keeps the current doc when the new one is shorter', () => {
+    const longer = { sleep_id: 'a', total_sleep_ms: 34200000 }
+    const shorter = { sleep_id: 'b', total_sleep_ms: 5000 }
+    expect(pickLongerSleep(longer, shorter)).toBe(longer)
+  })
+
+  it('treats a null total_sleep_ms as shorter than any real measurement', () => {
+    const nullDoc = { sleep_id: 'a', total_sleep_ms: null }
+    const realDoc = { sleep_id: 'b', total_sleep_ms: 5000 }
+    expect(pickLongerSleep(nullDoc, realDoc)).toBe(realDoc)
   })
 })
 
