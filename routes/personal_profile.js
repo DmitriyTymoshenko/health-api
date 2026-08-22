@@ -82,7 +82,7 @@ module.exports = function (getDB) {
     try {
       const db = getDB()
       const profile = await db.collection('personal_profile').findOne({ _type: 'profile' }) || DEFAULT_PROFILE
-      const latestWeight = await db.collection('weights').findOne({}, { sort: { date: -1 } })
+      const latestWeight = await db.collection('weight_log').findOne({}, { sort: { date: -1 } })
 
       const weight = latestWeight?.weight_kg || profile.weight_start || 100
       const height = profile.height_cm || 186

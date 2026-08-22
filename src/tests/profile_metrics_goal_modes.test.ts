@@ -26,7 +26,11 @@ function makeApp(profile: Record<string, unknown> | null, weightKg: number | nul
       if (name === 'personal_profile') {
         return { findOne: async () => profile }
       }
-      if (name === 'weights') {
+      // #969: the live collection is `weight_log` (every other route in this repo —
+      // weight.js, goals.js, water.js, nutrition.js, server.js — reads that name).
+      // A stub keyed on `weights` mirrors the bug instead of catching it (the exact
+      // #966->#988 trap: a green test proves nothing when it reproduces the defect).
+      if (name === 'weight_log') {
         return { findOne: async () => (weightKg == null ? null : { weight_kg: weightKg, date: '2026-08-09' }) }
       }
       return { findOne: async () => null }
@@ -68,12 +72,22 @@ describe('GET /api/profile/metrics — goal modes must not crash the ETA', () =>
     const app = makeApp(LIVE_PROFILE)
     const res = await request(app).get('/api/profile/metrics')
     expect(res.status).toBe(200)
+    // #969: the route must actually read the real weight, not fall back to the
+    // literal 100 baked in when `collection('weight_log')` returns null forever.
+    expect(res.body.weight_kg).toBe(98.2)
     // 98.2 - 96 = 2.2 kg -> 2.2 * 7700 / 500 = 33.88 -> 34 days
     expect(res.body.kg_to_goal).toBe(2.2)
     expect(res.body.days_to_goal).toBe(34)
     // #966: 157 (1.6 g/kg flat) -> 196 (weight_loss = 2.0 g/kg). This is the owner's
     // expected change, stated in the #966 acceptance criteria, not a regression.
     expect(res.body.protein_recommended_g).toBe(196)
+  })
+
+  it('#969 — no weight_log entry at all falls back to profile.weight_start/100, does not crash', async () => {
+    const app = makeApp(LIVE_PROFILE, null)
+    const res = await request(app).get('/api/profile/metrics')
+    expect(res.status).toBe(200)
+    expect(res.body.weight_kg).toBe(100) // no weight_log doc, no profile.weight_start -> literal fallback
   })
 
   it('#966 — protein_recommended_g follows the goal mode on THIS route too, not just /nutrition/summary', async () => {
