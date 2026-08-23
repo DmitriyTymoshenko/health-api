@@ -41,6 +41,31 @@ function calc1RM(weight, reps) {
   return Math.round(weight * (1 + reps / 30) * 10) / 10
 }
 
+// #1130: pick the "best" set of a session for ranking/history purposes.
+// Bodyweight exercises (pull-ups, dips, planks…) log sets with no `weight_kg`, so
+// calc1RM() always returns 0 for every set and the old orm-based reduce could never
+// pick a winner — max_weight/best_reps/est_1rm silently stayed 0 forever.
+// Bodyweight detection rule (documented, not implicit): a session is bodyweight when
+// NONE of its logged sets carry a positive `weight_kg` — this reads straight off the
+// `workouts` data actually being ranked (no extra `exercises_library.equipment` lookup
+// needed) and degrades correctly if a bodyweight exercise is later logged WITH added
+// weight (weighted pull-ups): it then ranks by 1RM again, same as any weighted lift.
+function pickBestSet(sets) {
+  const hasWeight = sets.some(s => (s.weight_kg || 0) > 0)
+  if (hasWeight) {
+    // Weighted exercise — unchanged behavior: rank by estimated 1RM.
+    return sets.reduce((best, s) => {
+      const orm = calc1RM(s.weight_kg, s.reps)
+      return orm > best.orm ? { orm, weight: s.weight_kg || 0, reps: s.reps || 0 } : best
+    }, { orm: 0, weight: 0, reps: 0 })
+  }
+  // Bodyweight exercise — rank by reps instead of a 1RM that can never be nonzero.
+  return sets.reduce((best, s) => {
+    const reps = s.reps || 0
+    return reps > best.reps ? { orm: 0, weight: 0, reps } : best
+  }, { orm: 0, weight: 0, reps: 0 })
+}
+
 module.exports = function (getDB) {
   const router = Router()
 
@@ -133,10 +158,8 @@ module.exports = function (getDB) {
         if (!ex) return null
         const sets = ex.sets || []
         const volume = sets.reduce((sum, s) => sum + (s.weight_kg || 0) * (s.reps || 0), 0)
-        const best = sets.reduce((best, s) => {
-          const orm = calc1RM(s.weight_kg, s.reps)
-          return orm > best.orm ? { orm, weight: s.weight_kg, reps: s.reps } : best
-        }, { orm: 0, weight: 0, reps: 0 })
+        const total_reps = sets.reduce((sum, s) => sum + (s.reps || 0), 0)
+        const best = pickBestSet(sets)
 
         return {
           date: w.date,
@@ -145,6 +168,8 @@ module.exports = function (getDB) {
           volume: Math.round(volume),
           max_weight: best.weight,
           best_reps: best.reps,
+          best_reps_set: best.reps,
+          total_reps,
           est_1rm: best.orm,
         }
       }).filter(Boolean)
@@ -174,16 +199,18 @@ module.exports = function (getDB) {
         const sets = ex.sets || []
         const total_volume = sets.reduce((sum, s) => sum + (s.weight_kg || 0) * (s.reps || 0), 0)
         const max_weight = Math.max(...sets.map(s => s.weight_kg || 0))
-        const est_1rm = sets.reduce((best, s) => {
-          const orm = calc1RM(s.weight_kg, s.reps)
-          return orm > best ? orm : best
-        }, 0)
+        const total_reps = sets.reduce((sum, s) => sum + (s.reps || 0), 0)
+        // #1130: same bodyweight-aware ranking as exercise-history, so est_1rm and the
+        // new reps fields agree between the two endpoints for the same session.
+        const best = pickBestSet(sets)
 
         return {
           date: w.date,
           max_weight,
           total_volume: Math.round(total_volume),
-          est_1rm,
+          est_1rm: best.orm,
+          best_reps_set: best.reps,
+          total_reps,
         }
       }).filter(Boolean)
 
