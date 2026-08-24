@@ -534,6 +534,81 @@ describe('sync-whoop — same-date sleep tiebreak (#1024 Low)', () => {
   })
 })
 
+describe('sync-whoop — #825 recovery selection: cycle_id match vs positional recs[0]', () => {
+  // Raw fixture from the live read-only trace (#825 comment thread, 22.08.2026):
+  // WHOOP returns recovery records DESC (newest first). For dateStr='2026-07-07'
+  // the /cycle branch settles (loop-upsert, oldest survives) on cycle_id=1622239986
+  // — verified against Дмитро's ground truth (07.07 recovery=93, 08.07 recovery=94).
+  const recsFor0707 = [
+    { cycle_id: 1624760717, score: { recovery_score: 94 } }, // newest — belongs to NEXT Kyiv day (08.07)
+    { cycle_id: 1622239986, score: { recovery_score: 93 } }, // correct for dateStr=07.07
+  ]
+
+  it('RED: the OLD positional recs[0] selection reproduces the -1-day bug (picks 94, not 93)', () => {
+    const old = recsFor0707[0] // this is exactly what `const r = recs[0]` used to do
+    expect(old.cycle_id).toBe(1624760717)
+    expect(old.score.recovery_score).toBe(94) // WRONG for dateStr=07.07 — the bug, reproduced
+  })
+
+  const { pickRecoveryByCycle } = require('../../scripts/sync-whoop')
+
+  it('GREEN: pickRecoveryByCycle matches the settled cycle_id — 93, not 94', () => {
+    const picked = pickRecoveryByCycle(recsFor0707, '1622239986')
+    expect(picked.cycle_id).toBe(1622239986)
+    expect(picked.score.recovery_score).toBe(93)
+  })
+
+  it('falls back to the last array element when cycleId has no match', () => {
+    const picked = pickRecoveryByCycle(recsFor0707, '9999999999')
+    expect(picked).toBe(recsFor0707[recsFor0707.length - 1])
+  })
+
+  it('falls back to the last array element when cycleId is unavailable (no anchor)', () => {
+    const picked = pickRecoveryByCycle(recsFor0707, null)
+    expect(picked).toBe(recsFor0707[recsFor0707.length - 1])
+  })
+
+  it('returns null for an empty records array', () => {
+    expect(pickRecoveryByCycle([], '1622239986')).toBeNull()
+  })
+})
+
+describe('sync-whoop — #825 sleep selection: cycle_id filter before pickLongerSleep tiebreak', () => {
+  const { filterSleepsByCycle, pickLongerSleep } = require('../../scripts/sync-whoop')
+
+  // Raw fixture from the live read-only trace (#825, 24.08.2026, health-api/scripts
+  // /_trace-825-sleep-check.js — deleted after use): dateStr='2026-07-06' window
+  // returns 2 non-nap sleep records — one ending THIS Kyiv night (correct, 3.42h)
+  // and one just starting (belongs to the NEXT Kyiv day 07.07, 8.09h — but LONGER).
+  // /cycle branch settles cycle_id=1621188764 for dateStr=07-06.
+  const sleepsFor0706 = [
+    { sleep_id: '2ec2', cycle_id: 1622239986, start: '2026-07-06T21:11:10.331Z', total_sleep_ms: 29120493 }, // WRONG — belongs to 07-07, but LONGER (8.09h)
+    { sleep_id: '9907', cycle_id: 1621188764, start: '2026-07-05T23:58:53.066Z', total_sleep_ms: 12326884 }, // correct for dateStr=07-06 (3.42h)
+  ]
+
+  it('RED: pickLongerSleep alone (no cycle filter) reproduces the bug — picks the WRONG next-day record', () => {
+    let sleepResult: { cycle_id: number; total_sleep_ms: number } | null = null
+    for (const s of sleepsFor0706) sleepResult = pickLongerSleep(sleepResult, s)
+    expect(sleepResult!.cycle_id).toBe(1622239986) // WRONG — belongs to 07-07, not 07-06
+  })
+
+  it('GREEN: filterSleepsByCycle narrows to the settled cycle BEFORE pickLongerSleep tie-breaks', () => {
+    const eligible = filterSleepsByCycle(sleepsFor0706, '1621188764')
+    let sleepResult: { cycle_id: number; total_sleep_ms: number } | null = null
+    for (const s of eligible) sleepResult = pickLongerSleep(sleepResult, s)
+    expect(sleepResult!.cycle_id).toBe(1621188764)
+    expect(sleepResult!.total_sleep_ms).toBe(12326884)
+  })
+
+  it('falls back to the unfiltered set when cycleId is unavailable (no anchor)', () => {
+    expect(filterSleepsByCycle(sleepsFor0706, null)).toBe(sleepsFor0706)
+  })
+
+  it('returns an empty (not fallback) set when cycleId is present but nothing matches — prefers missing data over wrong data', () => {
+    expect(filterSleepsByCycle(sleepsFor0706, '9999999999')).toEqual([])
+  })
+})
+
 describe('toDateStr — date formatting', () => {
   it('formats date as YYYY-MM-DD', () => {
     const d = new Date('2026-04-17T00:00:00')

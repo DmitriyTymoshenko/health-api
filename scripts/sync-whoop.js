@@ -539,6 +539,50 @@ function pickLongerSleep(current, candidate) {
   return (candidate.total_sleep_ms ?? -1) > (current.total_sleep_ms ?? -1) ? candidate : current
 }
 
+// #825 fix: the `/cycle` branch above settles on the OLDEST cycle in the UTC-day
+// query window (loop-upsert without break over a DESC array — the last iterated
+// element survives, which happens to be the correct Kyiv-day cycle). `/recovery`
+// used to pick `recs[0]` (the NEWEST record) positionally — WHOOP's physiological
+// cycle starts ~00:10-00:31 Kyiv (~21:09-21:31 UTC the PREVIOUS day), so almost
+// every `[dateStr 00:00Z, dateStr+1 00:00Z)` window catches two cycles: the tail
+// of the correct night (older, ends inside the window) and the just-started next
+// cycle (newer, belongs to the NEXT Kyiv day). `recs[0]` = newest = systematically
+// the WRONG day — this is the exact mechanism behind the −1-day recovery/HRV shift
+// (verified with raw payloads, #825 comment thread, 22.08.2026: dateStr='2026-07-07'
+// → recs[0]=cycle_id 1624760717/score 94, but the correct record for that date is
+// cycle_id 1622239986/score 93 — the same cycle_id `/cycle` already settled on).
+// Fix: pick the record whose cycle_id matches what `/cycle` settled on for this
+// SAME dateStr. Falls back to the last array element (mirrors `/cycle`'s own
+// selection rule) when cycleId is unavailable (the `/cycle` fetch itself failed)
+// or no recovery record matches it. Exported for direct unit testing.
+function pickRecoveryByCycle(recs, cycleId) {
+  if (!recs || !recs.length) return null
+  if (cycleId) {
+    const match = recs.find(r => String(r.cycle_id) === cycleId)
+    if (match) return match
+  }
+  return recs[recs.length - 1]
+}
+
+// #825 fix, same class as pickRecoveryByCycle above: a raw UTC-day window can
+// return TWO physical sleep sessions — one ending inside the window (correct
+// night) and one just starting (belongs to the NEXT Kyiv day). `pickLongerSleep`
+// alone (its original #1024 purpose: tie-break >1 nap:false record for the SAME
+// correct night) is not a date-correctness selector — verified live 24.08.2026:
+// for dateStr='2026-07-06' the WRONG (next-day) session was LONGER (8.09h vs the
+// correct 3.42h), so "keep longest" silently picked the wrong night. Narrow to
+// records for the cycle `/cycle` settled on for this SAME dateStr FIRST; only
+// THEN does pickLongerSleep tie-break among genuine same-night duplicates. When
+// cycleId is unavailable (no anchor — the `/cycle` fetch itself failed), falls
+// back to the unfiltered set (old best-effort behavior). When cycleId IS known
+// but no sleep record matches it, returns an EMPTY set rather than falling back
+// to the unfiltered set — missing sleep data for a date is honest; picking an
+// adjacent night's data is not. Exported for direct unit testing.
+function filterSleepsByCycle(sleeps, cycleId) {
+  if (!cycleId) return sleeps
+  return sleeps.filter(s => String(s.cycle_id ?? '') === cycleId)
+}
+
 // #1024: extracted so the sleep→daily_metrics flattening logic has exactly ONE
 // implementation, imported by both sync-whoop.js (production) and whoop.test.ts
 // (regression guard) — previously the test carried a hand-copied duplicate that
@@ -627,7 +671,7 @@ async function syncDate(db, token, dateStr) {
     const recResp = await whoopGet(token,
       `/recovery?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`, true)
     const recs = recResp?.records || []
-    const r = recs[0]
+    const r = pickRecoveryByCycle(recs, cycleId) // #825: match /cycle's settled cycle_id, not positional recs[0]
     if (r) {
       const doc = {
         date: dateStr,
@@ -662,7 +706,9 @@ async function syncDate(db, token, dateStr) {
   try {
     const sleepResp = await whoopGet(token,
       `/activity/sleep?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`, true)
-    const sleeps = (sleepResp?.records || []).filter(s => !s.nap)
+    // #825: narrow to the cycle /cycle settled on for this dateStr BEFORE the
+    // pickLongerSleep tie-break below — see filterSleepsByCycle doc comment.
+    const sleeps = filterSleepsByCycle((sleepResp?.records || []).filter(s => !s.nap), cycleId)
     for (const s of sleeps) {
       const stages = s.score?.stage_summary ?? {}
       const totalInBedMs = stages.total_in_bed_time_milli ?? null
@@ -864,6 +910,7 @@ async function main() {
 module.exports = { refreshToken, getToken, alertReauthIfDue, markSyncSuccess, ReauthRequiredError, TransientRefreshError,
   REFRESH_THRESHOLD_MS, MIN_REFRESH_INTERVAL_MS, REAUTH_DEDUP_HOURS, RETRY_5XX_PAUSE_MS,
   DEFAULT_UA, buildRequestHeaders, captureSetCookie, cookieHeaderFor, resetCookieJar, buildMetricsDoc, buildSleepMetricFields, pickLongerSleep,
+  pickRecoveryByCycle, filterSleepsByCycle,
   preflightProbe }
 
 // Run only when invoked directly, not when required by a test.
