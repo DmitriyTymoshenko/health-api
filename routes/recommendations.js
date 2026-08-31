@@ -245,7 +245,12 @@ module.exports = function (getDB) {
           daily_kcal_goal: null,
           tdee_kcal: 2429,
           deficit_kcal: 500,
-          daily_protein_goal_g: 150,
+          // #967: null, not a 150 literal — resolveProteinGoalG() treats any non-null
+          // daily_protein_goal_g as an EXPLICIT OWNER OVERRIDE that wins outright over the
+          // per-kg dynamic calc (#961/#966/#968). A hardcoded 150 here silently forced
+          // everyone through the "no profile" branch onto 150g, defeating the whole point
+          // of the dynamic calc. Matches personal_profile.js's own real-profile default.
+          daily_protein_goal_g: null,
           primary_goal: 'weight_loss',
         }
       }
@@ -543,11 +548,13 @@ module.exports = function (getDB) {
       // Fetch profile for targets
       let profile = await db.collection('personal_profile').findOne({ _type: 'profile' })
       if (!profile) {
+        // #967: daily_protein_goal_g null, not 150 — same reasoning as the daily handler
+        // above (resolveProteinGoalG treats a non-null value as an explicit override).
         profile = {
           daily_kcal_goal: null,
           tdee_kcal: 2429,
           deficit_kcal: 500,
-          daily_protein_goal_g: 150,
+          daily_protein_goal_g: null,
           primary_goal: 'weight_loss',
         }
       }

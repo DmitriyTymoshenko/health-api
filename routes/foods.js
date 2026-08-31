@@ -268,8 +268,16 @@ module.exports = function (getDB) {
   router.post('/', async (req, res) => {
     try {
       const db = getDB()
+      // #931: reject bodies with no non-empty `name` BEFORE any DB write. Without this,
+      // `...req.body` silently insert()s a document with no `name` at all — every future
+      // reader that does `.name.*` on foods_library (#926) is a landmine waiting on it.
+      const name = typeof req.body.name === 'string' ? req.body.name.trim() : ''
+      if (!name) {
+        return res.status(400).json({ error: 'name is required and must be a non-empty string' })
+      }
       const food = {
         ...req.body,
+        name,
         fiber_per_100g: req.body.fiber_per_100g ?? 0,
         sugar_per_100g: req.body.sugar_per_100g ?? 0,
         salt_per_100g:  req.body.salt_per_100g  ?? 0,
