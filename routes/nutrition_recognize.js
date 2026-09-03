@@ -16,7 +16,7 @@ const { Router } = require('express')
  * join all response parts, clamped output-token override) instead of reinventing it.
  */
 
-const GEMINI_MODEL = process.env.GEMINI_VISION_MODEL || 'gemini-2.5-flash'
+const GEMINI_MODEL = process.env.GEMINI_VISION_MODEL || 'gemini-3.8-flash'
 // Same floor/clamp rationale as src/gemini-vision.ts (#863, 2026-07-30/08-03): a bad env override
 // must degrade to "small but usable", never invert into a hard 400. Default raised 2000->4000
 // after a live test hit finishReason=MAX_TOKENS with content.parts=[] on the first real photo —
