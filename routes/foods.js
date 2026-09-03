@@ -194,6 +194,22 @@ async function searchWeb(query) {
   return []
 }
 
+// ─── Local library search helpers (#1225) ──────────────────────────────────────
+// Regex metacharacters in a raw user query (parentheses, asterisks — both appear
+// in real foods_library names like "Голубці (з рисом" / "Псиліум (лушпиння)")
+// make `{ $regex: query }` throw and 500 the whole request. Escape BEFORE it
+// ever reaches a $regex filter.
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+// lowercase + trim + collapse repeated whitespace. The `i` option already makes
+// matching case-insensitive, but normalizing here keeps the query stable for any
+// future exact-match/alias lookups and matches the "нормалізація запиту" ask.
+function normalizeSearchQuery(raw) {
+  return String(raw || '').trim().replace(/\s+/g, ' ').toLowerCase()
+}
+
 // ─── Router ───────────────────────────────────────────────────────────────────
 module.exports = function (getDB) {
   const router = Router()
@@ -244,15 +260,16 @@ module.exports = function (getDB) {
   router.get('/search', async (req, res) => {
     try {
       const db = getDB()
-      const query = req.query.q || ''
+      const query = normalizeSearchQuery(req.query.q)
       if (!query) return res.json({ source: 'library', count: 0, results: [] })
 
+      const safeQuery = escapeRegex(query)
       const local = await db.collection('foods_library')
         .find({ $or: [
-          { name:    { $regex: query, $options: 'i' } },
-          { name_ua: { $regex: query, $options: 'i' } },
-          { brand:   { $regex: query, $options: 'i' } },
-          { aliases: { $regex: query, $options: 'i' } },
+          { name:    { $regex: safeQuery, $options: 'i' } },
+          { name_ua: { $regex: safeQuery, $options: 'i' } },
+          { brand:   { $regex: safeQuery, $options: 'i' } },
+          { aliases: { $regex: safeQuery, $options: 'i' } },
         ]})
         .sort({ use_count: -1 })
         .limit(10)
