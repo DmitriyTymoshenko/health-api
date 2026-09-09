@@ -1,4 +1,6 @@
 const { Router } = require('express')
+const { hasPositiveWeight } = require('../lib/workout-sets')
+const { evaluateProgression } = require('../lib/exercise-progression')
 
 const DEFAULT_EXERCISES = [
   // Груди
@@ -51,7 +53,7 @@ function calc1RM(weight, reps) {
 // needed) and degrades correctly if a bodyweight exercise is later logged WITH added
 // weight (weighted pull-ups): it then ranks by 1RM again, same as any weighted lift.
 function pickBestSet(sets) {
-  const hasWeight = sets.some(s => (s.weight_kg || 0) > 0)
+  const hasWeight = hasPositiveWeight(sets)
   if (hasWeight) {
     // Weighted exercise — unchanged behavior: rank by estimated 1RM.
     return sets.reduce((best, s) => {
@@ -245,6 +247,55 @@ module.exports = function (getDB) {
       }).filter(Boolean)
 
       res.json(progress)
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // GET /api/workouts/progression?name=Жим гантелей лежачи — #1291 double-progression
+  // engine. Reads ONLY ex.sets[] of the LAST logged session (§7/§10.5 — the next-step
+  // recommendation needs only the latest session; history is used solely for the
+  // increment-step lookup). Reuses the same collections/matching pattern as
+  // /exercise-history and /progress above; core decision logic lives in
+  // lib/exercise-progression.js so it is unit-testable without a DB.
+  router.get('/progression', async (req, res) => {
+    try {
+      const db = getDB()
+      const { name } = req.query
+      if (!name) return res.status(400).json({ error: 'name required' })
+
+      const exercise = await db.collection('exercises_library').findOne({ name })
+      const equipment = exercise?.equipment ?? null
+      const weightUnit = exercise?.weight_unit ?? null
+
+      const workouts = await db.collection('workouts')
+        .find({ 'exercises.name': name })
+        .sort({ date: 1 })
+        .toArray()
+      const sessions = workouts.map(w => {
+        const ex = (w.exercises || []).find(e => e.name === name)
+        return { date: w.date, sets: (ex && ex.sets) || [] }
+      })
+
+      // Active program lookup — same query shape as routes/training_program.js's
+      // getActiveProgram(), WITHOUT its auto-seed side effect (a read-only progression
+      // check should never write a program document as a side effect).
+      const programDoc = await db.collection('training_programs')
+        .findOne({ is_active: true }, { sort: { version: -1 } })
+      let targetRepsRaw
+      if (programDoc) {
+        outer: for (const day of programDoc.days || []) {
+          for (const entry of day.exercises || []) {
+            if (entry.name === name) {
+              targetRepsRaw = entry.target_reps
+              break outer
+            }
+          }
+        }
+      }
+
+      const result = evaluateProgression({ exerciseName: name, equipment, weightUnit, sessions, targetRepsRaw })
+      res.json(result)
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
