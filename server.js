@@ -1,5 +1,4 @@
 const express = require('express')
-const cors = require('cors')
 const { MongoClient } = require('mongodb')
 const fs = require('fs')
 const path = require('path')
@@ -7,7 +6,7 @@ const path = require('path')
 const pkg = require('./package.json')
 
 const app = express()
-const PORT = 3001
+const PORT = process.env.HEALTH_API_TEST_PORT || 3001
 const MONGO_URL = process.env.MONGO_URL || 'mongodb://localhost:27017'
 const DB_NAME = 'health_tracker'
 
@@ -20,7 +19,13 @@ const DB_NAME = 'health_tracker'
 // re-read an already-consumed stream. Env-overridable so it can be tuned without a code change.
 const JSON_BODY_LIMIT = process.env.HEALTH_API_JSON_LIMIT || '10mb'
 
-app.use(cors())
+// #1294 SECURITY: `cors()` with no options set Access-Control-Allow-Origin: * on every
+// response. Grep-inventoried every consumer of :3001 (apex, 2026-09-09) — Caddy reverse_proxy,
+// vite dev proxy, vite preview proxy, services_monitor.py — all 4 are same-origin proxies, none
+// is a real cross-origin browser client. Removed entirely rather than whitelisted: no browser
+// ever needs a CORS header here, and a whitelist would be a weaker, more fragile fix for a
+// protection nobody uses. If a genuine cross-origin consumer shows up later, add a whitelist
+// then and say so explicitly — don't silently re-add a bare cors().
 app.use(express.json({ limit: JSON_BODY_LIMIT }))
 
 let db
@@ -43,6 +48,12 @@ async function connectDB() {
   await db.collection('goals').createIndex({ type: 1 })
   await db.collection('notes').createIndex({ date: -1 })
   await db.collection('notes').createIndex({ tags: 1 })
+  // #1294 SECURITY: WHOOP OAuth `state` storage. Must survive a restart (Restart=always,
+  // ExecStartPre kills the port on deploy) so an in-flight /authorize→/callback round trip
+  // isn't invalidated by an unrelated deploy — hence Mongo, not an in-memory Map. TTL index
+  // auto-expires unused state after 10 min so a callback with a stale/replayed state 404s
+  // out on its own without a cleanup job.
+  await db.collection('whoop_oauth_state').createIndex({ createdAt: 1 }, { expireAfterSeconds: 600 })
 
   console.log('Indexes created')
   return db
@@ -334,8 +345,13 @@ if (require.main === module) {
   connectDB()
     .then(async () => {
       await seedData()
-      app.listen(PORT, () => {
-        console.log(`Health API running on http://localhost:${PORT}`)
+      // #1294 SECURITY: was app.listen(PORT) with no host = bind 0.0.0.0 (ss confirmed
+      // LISTEN *:3001), i.e. reachable directly on the public interface, past Caddy's
+      // basicauth, stopped only by ufw. All 4 real consumers (Caddy, vite dev/preview proxy,
+      // services_monitor.py) already talk to localhost — 127.0.0.1 is a no-op for them and
+      // closes the direct-to-host path.
+      app.listen(PORT, '127.0.0.1', () => {
+        console.log(`Health API running on http://127.0.0.1:${PORT}`)
       })
     })
     .catch((err) => {

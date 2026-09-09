@@ -1,5 +1,39 @@
 const { Router } = require('express')
 
+// #1294 SECURITY: XSS — every `res.send(\`<h2>...${userInput}</h2>\`)` sink in this file
+// interpolated request-controlled data (query params, upstream error bodies) straight into
+// an HTML response with no escaping. Applied to ALL FOUR sinks, not just the two named in the
+// original ticket (whoop.js:262/269/270/316 — line 270 is the worst: it fires when `code` is
+// simply ABSENT, so `?x=<script>` hits it directly, no valid-looking request needed at all).
+function escapeHtml(str) {
+  return String(str ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]))
+}
+
+// #1294 SECURITY: rate limiter for the 2 routes that sit OUTSIDE Caddy's basicauth by design
+// (`/authorize`, `/callback` — real OAuth entry/exit points, Caddyfile:105-130). Deliberately
+// NOT applied to the rest of `/api/whoop/*` — the dashboard page fires several whoop endpoints
+// per load, and those already sit behind basicauth, so a shared limiter there would throttle
+// the owner's own dashboard for no security benefit (same class of bug as a shared threshold
+// across unrelated event types — persona rule 53). Simple in-memory sliding window: this is a
+// single-owner tool behind Caddy, not a multi-tenant API — no need for a Redis-backed limiter.
+function createRateLimiter({ windowMs, max }) {
+  const hits = new Map() // ip -> timestamps[]
+  return function rateLimiter(req, res, next) {
+    const now = Date.now()
+    const ip = req.ip || req.socket?.remoteAddress || 'unknown'
+    const recent = (hits.get(ip) || []).filter((t) => now - t < windowMs)
+    recent.push(now)
+    hits.set(ip, recent)
+    if (recent.length > max) {
+      return res.status(429).json({ error: 'Too many requests, try again later' })
+    }
+    next()
+  }
+}
+const whoopAuthRateLimit = createRateLimiter({ windowMs: 60_000, max: 10 })
+
 module.exports = function (getDB) {
   const router = Router()
 
@@ -246,28 +280,46 @@ module.exports = function (getDB) {
   // GET /api/whoop/authorize — 302 to WHOOP's consent screen (no basicauth, Caddy exception).
   // Exists so re-auth is a SHORT openable link (/whoop-auth) instead of a 400-char URL that
   // has to be copied out of a terminal — see rules/lessons-learned.md 2026-07-31.
-  router.get('/authorize', (req, res) => {
+  router.get('/authorize', whoopAuthRateLimit, async (req, res) => {
     const fs = require('fs')
     try {
       const creds = JSON.parse(fs.readFileSync('/root/.config/whoop/whoop.json', 'utf8'))
+      // #1294 SECURITY: `state` used to be generated and thrown away — nothing to verify
+      // it against in /callback, so any third party could hit /callback with their own
+      // `code` and it would be exchanged and written over Дмитро's live tokens. Persist it
+      // in Mongo (TTL 10 min, see server.js connectDB) so /callback can require an exact,
+      // single-use match before it ever calls the token endpoint.
+      const state = require('crypto').randomBytes(16).toString('hex')
+      await getDB().collection('whoop_oauth_state').insertOne({ state, createdAt: new Date() })
       const url = 'https://api.prod.whoop.com/oauth/oauth2/auth?' + new URLSearchParams({
         response_type: 'code',
         client_id: creds.client_id,
         redirect_uri: 'https://srv1532186.hstgr.cloud/health-api/api/whoop/callback',
         scope: 'offline read:recovery read:sleep read:workout read:profile read:body_measurement read:cycles',
-        state: require('crypto').randomBytes(16).toString('hex'),
+        state,
       }).toString()
       res.redirect(302, url)
     } catch (err) {
-      res.status(500).send(`<h2>❌ Не вдалось побудувати authorize-URL: ${err.message}</h2>`)
+      res.status(500).send(`<h2>❌ Не вдалось побудувати authorize-URL: ${escapeHtml(err.message)}</h2>`)
     }
   })
 
   // GET /api/whoop/callback — OAuth2 callback (no basicauth, handled by Caddy exception)
-  router.get('/callback', async (req, res) => {
-    const { code, error, error_description } = req.query
-    if (error) return res.status(400).send(`<h2>❌ WHOOP повернув помилку: ${error}</h2><p>${error_description || ''}</p>`)
-    if (!code) return res.status(400).send(`<h2>❌ No code received</h2><p>Params: ${JSON.stringify(req.query)}</p>`)
+  router.get('/callback', whoopAuthRateLimit, async (req, res) => {
+    const { code, error, error_description, state } = req.query
+    if (error) return res.status(400).send(`<h2>❌ WHOOP повернув помилку: ${escapeHtml(error)}</h2><p>${escapeHtml(error_description || '')}</p>`)
+    if (!code) return res.status(400).send(`<h2>❌ No code received</h2><p>Params: ${escapeHtml(JSON.stringify(req.query))}</p>`)
+
+    // #1294 SECURITY: verify `state` BEFORE touching the token endpoint or the creds file.
+    // Missing/unknown/expired/already-consumed state → clean 400, no token exchange, no
+    // write to /root/.config/whoop/whoop.json — never a silent overwrite. Single-use:
+    // findOneAndDelete both checks and consumes it atomically.
+    const stateDoc = state
+      ? await getDB().collection('whoop_oauth_state').findOneAndDelete({ state })
+      : null
+    if (!stateDoc) {
+      return res.status(400).send('<h2>❌ Invalid or expired state</h2><p>Start again via <a href="/whoop-auth">/whoop-auth</a>.</p>')
+    }
 
     const https = require('https')
     const fs = require('fs')
@@ -313,7 +365,7 @@ module.exports = function (getDB) {
 
       res.send('<h1>✅ WHOOP авторизація успішна! Можна закрити це вікно.<br>Дані будуть синхронізовані автоматично.</h1>')
     } catch (err) {
-      res.status(500).send(`<h2>❌ Помилка: ${err.message}</h2>`)
+      res.status(500).send(`<h2>❌ Помилка: ${escapeHtml(err.message)}</h2>`)
     }
   })
 

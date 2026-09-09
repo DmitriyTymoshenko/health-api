@@ -3,8 +3,12 @@ const https = require('https')
 const querystring = require('querystring')
 
 // ─── FatSecret ────────────────────────────────────────────────────────────────
-const FS_CLIENT_ID = 'a3e1c466ef824eec8eab99cb379aa327'
-const FS_CLIENT_SECRET = '578b6071811a473f901bc02611f86865'
+// #1294 SECURITY: was hardcoded literals (in git history at commit 3a00fe6). Now env-only,
+// same as every other secret in this service (Gemini/Telegram/Mongo — all systemd drop-ins,
+// no dotenv in this repo). Ryan's #1303-step-1 drop-in (fatsecret.conf) already provides these
+// two names, so no env var rename is needed on the systemd side.
+const FS_CLIENT_ID = process.env.FATSECRET_CLIENT_ID
+const FS_CLIENT_SECRET = process.env.FATSECRET_CLIENT_SECRET
 const FS_TOKEN_URL = 'https://oauth.fatsecret.com/connect/token'
 const FS_API_URL = 'https://platform.fatsecret.com/rest/server.api'
 
@@ -12,6 +16,11 @@ let fsToken = null
 let fsTokenExpiry = 0
 
 async function getFatSecretToken() {
+  if (!FS_CLIENT_ID || !FS_CLIENT_SECRET) {
+    // Fail loud, no silent fallback to a literal. Whatever caller invoked this must
+    // surface it as a 503, not swallow it into an empty result set.
+    throw new Error('FATSECRET_CLIENT_ID/FATSECRET_CLIENT_SECRET not configured (systemd drop-in missing)')
+  }
   if (fsToken && Date.now() < fsTokenExpiry - 60000) return fsToken
   return new Promise((resolve, reject) => {
     const body = querystring.stringify({ grant_type: 'client_credentials', scope: 'basic' })
