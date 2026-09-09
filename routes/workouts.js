@@ -1,6 +1,8 @@
 const { Router } = require('express')
 const { hasPositiveWeight } = require('../lib/workout-sets')
 const { evaluateProgression } = require('../lib/exercise-progression')
+const { parseWorkoutLogText } = require('../lib/workout-log-parser')
+const { buildExerciseFromParsed, mergeExercisesIntoDoc } = require('../lib/workout-log-write')
 
 const DEFAULT_EXERCISES = [
   // Груди
@@ -591,6 +593,82 @@ module.exports = function (getDB) {
 
       const result = await db.collection('workouts').insertOne(doc)
       res.status(201).json({ ...doc, _id: result.insertedId })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // POST /api/workouts/log-text — #1314: accept a strength session the owner dictated
+  // in Telegram (one line per exercise, "Назва: 8х80 · 7х80 · 6х80" — reps FIRST, weight
+  // SECOND, per #1291 §"РЕФЕРЕНС ВЛАСНИКА" pt.1). This is the ONLY currently-missing
+  // write path into `workouts` — the UI form (health-dashboard Workouts.jsx) already
+  // POSTs structured JSON to `/` above; this route does the free-text -> structured-JSON
+  // step and then reuses the SAME collection/shape, no schema change.
+  //
+  // weight_unit is read from exercises_library (#1291 §5, owner "затверджую" 09.09): it
+  // lives on the EXERCISE, never guessed globally, and an unset unit yields
+  // weight_kg=null (explicit "not set" state) rather than a silent kg default — the raw
+  // weight_input the owner said is always preserved regardless of unit.
+  //
+  // Idempotency (#1314 acceptance) is scoped to {date, source:'telegram-log'}: re-POSTing
+  // the same text merges into the SAME session doc, replacing each exercise's sets by
+  // name rather than duplicating — a manual UI entry (source:'manual') for the same date
+  // is a SEPARATE doc, untouched.
+  router.post('/log-text', async (req, res) => {
+    try {
+      const db = getDB()
+      const { text, date, source } = req.body
+      if (!text || !String(text).trim()) {
+        return res.status(400).json({ error: 'text required' })
+      }
+
+      const sessionDate = date || new Date().toISOString().split('T')[0]
+      const sessionSource = source || 'telegram-log'
+
+      const { entries, skipped } = parseWorkoutLogText(text)
+      if (entries.length === 0) {
+        return res.status(400).json({ error: 'no parseable exercise lines found', skipped })
+      }
+
+      const libCol = db.collection('exercises_library')
+      const newExercises = []
+      for (const entry of entries) {
+        const escaped = entry.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        let libDoc = await libCol.findOne({ name: { $regex: new RegExp(`^${escaped}$`, 'i') } })
+        if (!libDoc) {
+          // Auto-create a minimal library entry (unit "не задано") so a later PATCH
+          // /exercises/:name can set weight_unit once — never invent equipment/unit.
+          const created = { name: entry.name, muscle_group: null, equipment: null, weight_unit: null, created_at: new Date() }
+          const insertResult = await libCol.insertOne(created)
+          libDoc = { ...created, _id: insertResult.insertedId }
+        }
+        newExercises.push(buildExerciseFromParsed(entry, libDoc.weight_unit ?? null))
+      }
+
+      const workoutsCol = db.collection('workouts')
+      const existing = await workoutsCol.findOne({ date: sessionDate, source: sessionSource })
+
+      let resultDoc
+      if (!existing) {
+        const doc = {
+          date: sessionDate,
+          name: 'Тренування (лог)',
+          source: sessionSource,
+          exercises: newExercises,
+          created_at: new Date(),
+        }
+        const insertResult = await workoutsCol.insertOne(doc)
+        resultDoc = { ...doc, _id: insertResult.insertedId }
+      } else {
+        const mergedExercises = mergeExercisesIntoDoc(existing.exercises, newExercises)
+        await workoutsCol.updateOne(
+          { _id: existing._id },
+          { $set: { exercises: mergedExercises, updated_at: new Date() } }
+        )
+        resultDoc = { ...existing, exercises: mergedExercises }
+      }
+
+      res.status(existing ? 200 : 201).json({ ...resultDoc, skipped: skipped.length > 0 ? skipped : undefined })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
