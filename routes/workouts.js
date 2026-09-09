@@ -141,6 +141,36 @@ module.exports = function (getDB) {
     }
   })
 
+  // PATCH /api/workouts/exercises/:name — #1304: add technique/video/photo content
+  // to an EXISTING exercise. Exact-match findOne (no regex — names are canonical),
+  // $set whitelist only. name/muscle_group/equipment/_id are never written here, so
+  // this route is structurally unable to rename an exercise (the plan↔library link
+  // key is the name, #1290) even if a caller passes those fields in the body.
+  router.patch('/exercises/:name', async (req, res) => {
+    try {
+      const db = getDB()
+      const name = req.params.name
+      const { description_ua, video_url, image_url, cues } = req.body
+
+      const update = {}
+      if (description_ua !== undefined) update.description_ua = description_ua
+      if (video_url !== undefined) update.video_url = video_url
+      if (image_url !== undefined) update.image_url = image_url
+      if (cues !== undefined) update.cues = cues
+
+      const col = db.collection('exercises_library')
+      const result = await col.updateOne({ name }, { $set: update })
+      if (result.matchedCount === 0) {
+        return res.status(404).json({ error: 'Exercise not found', name })
+      }
+
+      const updated = await col.findOne({ name })
+      res.json(updated)
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET /api/workouts/exercise-history?name=Жим лежачи
   router.get('/exercise-history', async (req, res) => {
     try {
