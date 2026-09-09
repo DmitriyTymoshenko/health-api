@@ -64,7 +64,7 @@ describe('GET /api/workouts/progression', () => {
     expect(res.status).toBe(400)
   })
 
-  it('weight_unit set on the exercise -> full progression decision (add_reps, owner\'s bench-press pattern)', async () => {
+  it('weight_unit set on the exercise -> full progression decision (reduce_weight, owner\'s bench-press pattern, default variant=mean per #1291 owner decision)', async () => {
     const app = makeApp({
       exercises: [{ name: 'Жим в нахилі', equipment: 'barbell', weight_unit: 'kg' }],
       workouts: [{ date: '2026-09-09', exercises: [{ name: 'Жим в нахилі', sets: [
@@ -74,8 +74,9 @@ describe('GET /api/workouts/progression', () => {
     })
     const res = await request(app).get('/api/workouts/progression').query({ name: 'Жим в нахилі' })
     expect(res.status).toBe(200)
-    expect(res.body.next_action).toBe('add_reps')
-    expect(res.body.reason_code).toBe('below_range_top')
+    // default TOP_OF_RANGE_RULE=mean (owner decision, #1291): mean(8,7,6)=7 < low(8) -> reduce_weight
+    expect(res.body.next_action).toBe('reduce_weight')
+    expect(res.body.reason_code).toBe('weight_too_high')
     expect(res.body.working_weight_kg).toBe(80)
     expect(res.body.equipment).toBe('barbell')
   })
