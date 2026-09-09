@@ -35,6 +35,11 @@ function makeApp(opts: {
             exercises.push({ ...doc, _id })
             return { insertedId: _id }
           },
+          updateOne: async (filter: any, update: any) => {
+            const doc = exercises.find(e => e._id === filter._id)
+            if (doc) Object.assign(doc, update.$set)
+            return { matchedCount: doc ? 1 : 0 }
+          },
         }
       }
       if (name === 'workouts') {
@@ -76,9 +81,9 @@ describe('POST /api/workouts/log-text', () => {
     expect(res.body.skipped).toBeDefined()
   })
 
-  it("201, creates a new session doc, resolves weight_unit from exercises_library, preserves weight_input the owner said", async () => {
+  it("201, creates a new session doc, initializes missing weight_unit to kg, preserves weight_input the owner said", async () => {
     const { app, workouts } = makeApp({
-      exercises: [{ name: 'Тяга блока', weight_unit: null }],
+      exercises: [{ _id: 'lib_1', name: 'Тяга блока', weight_unit: null }],
     })
     const text = 'Тяга блока: 8х52 · 8х66 · 8х73 · 8х73'
     const res = await request(app)
@@ -92,16 +97,15 @@ describe('POST /api/workouts/log-text', () => {
     const sets = res.body.exercises[0].sets
     expect(sets.map((s: any) => s.reps)).toEqual([8, 8, 8, 8])
     expect(sets.map((s: any) => s.weight_input)).toEqual([52, 66, 73, 73])
-    // unit not set on this exercise -> weight_kg stays null, not silently defaulted to kg
-    expect(sets.every((s: any) => s.weight_kg === null)).toBe(true)
+    expect(sets.map((s: any) => s.weight_kg)).toEqual([52, 66, 73, 73])
     expect(workouts).toHaveLength(1)
   })
 
-  it('auto-creates a missing exercises_library entry (weight_unit null), does not invent equipment', async () => {
+  it('auto-creates a missing exercises_library entry with kg unit, does not invent equipment', async () => {
     const { app, exercises } = makeApp({ exercises: [] })
     await request(app).post('/api/workouts/log-text').send({ date: '2026-09-09', text: 'Розводка: 10х235' })
     expect(exercises).toHaveLength(1)
-    expect(exercises[0]).toMatchObject({ name: 'Розводка', equipment: null, weight_unit: null })
+    expect(exercises[0]).toMatchObject({ name: 'Розводка', equipment: null, weight_unit: 'kg' })
   })
 
   it('resolves weight_kg when the exercise has a known kg unit', async () => {
@@ -114,7 +118,7 @@ describe('POST /api/workouts/log-text', () => {
   })
 
   it('idempotent: re-POSTing the SAME text does not duplicate the exercise or the session doc', async () => {
-    const { app, workouts } = makeApp({ exercises: [{ name: 'Тяга блока', weight_unit: null }] })
+    const { app, workouts } = makeApp({ exercises: [{ _id: 'lib_1', name: 'Тяга блока', weight_unit: null }] })
     const text = 'Тяга блока: 8х52 · 8х66 · 8х73 · 8х73'
     const res1 = await request(app).post('/api/workouts/log-text').send({ date: '2026-09-09', text })
     expect(res1.status).toBe(201)
@@ -127,7 +131,7 @@ describe('POST /api/workouts/log-text', () => {
 
   it('a second exercise on the same date is appended to the SAME session doc, not a new one', async () => {
     const { app, workouts } = makeApp({
-      exercises: [{ name: 'Тяга блока', weight_unit: null }, { name: 'Розводка', weight_unit: null }],
+      exercises: [{ _id: 'lib_1', name: 'Тяга блока', weight_unit: null }, { _id: 'lib_2', name: 'Розводка', weight_unit: null }],
     })
     await request(app).post('/api/workouts/log-text').send({ date: '2026-09-09', text: 'Тяга блока: 8х52' })
     const res2 = await request(app).post('/api/workouts/log-text').send({ date: '2026-09-09', text: 'Розводка: 10х235' })
@@ -138,7 +142,7 @@ describe('POST /api/workouts/log-text', () => {
 
   it('a manual UI entry (source=manual) for the same date is a SEPARATE doc from a telegram-log entry', async () => {
     const { app, workouts } = makeApp({
-      exercises: [{ name: 'Тяга блока', weight_unit: null }],
+      exercises: [{ _id: 'lib_1', name: 'Тяга блока', weight_unit: null }],
       workouts: [{ date: '2026-09-09', source: 'manual', exercises: [{ name: 'Планка', sets: [] }] }],
     })
     const res = await request(app).post('/api/workouts/log-text').send({ date: '2026-09-09', text: 'Тяга блока: 8х52' })
@@ -147,7 +151,7 @@ describe('POST /api/workouts/log-text', () => {
   })
 
   it('a line that fails to parse is reported in `skipped`, good lines on the same request still write', async () => {
-    const { app } = makeApp({ exercises: [{ name: 'Тяга блока', weight_unit: null }] })
+    const { app } = makeApp({ exercises: [{ _id: 'lib_1', name: 'Тяга блока', weight_unit: null }] })
     const res = await request(app)
       .post('/api/workouts/log-text')
       .send({ date: '2026-09-09', text: 'сміття без двокрапки\nТяга блока: 8х52' })

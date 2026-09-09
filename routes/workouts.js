@@ -605,10 +605,10 @@ module.exports = function (getDB) {
   // POSTs structured JSON to `/` above; this route does the free-text -> structured-JSON
   // step and then reuses the SAME collection/shape, no schema change.
   //
-  // weight_unit is read from exercises_library (#1291 §5, owner "затверджую" 09.09): it
-  // lives on the EXERCISE, never guessed globally, and an unset unit yields
-  // weight_kg=null (explicit "not set" state) rather than a silent kg default — the raw
-  // weight_input the owner said is always preserved regardless of unit.
+  // weight_unit lives on the EXERCISE (#1291 §5, owner "затверджую" 09.09). The
+  // free-text strength log is a weighted input path by definition for #1314, so the
+  // first dictated numeric load initializes a missing exercise unit to kg and writes
+  // canonical weight_kg immediately. The raw weight_input is still preserved.
   //
   // Idempotency (#1314 acceptance) is scoped to {date, source:'telegram-log'}: re-POSTing
   // the same text merges into the SAME session doc, replacing each exercise's sets by
@@ -636,11 +636,17 @@ module.exports = function (getDB) {
         const escaped = entry.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
         let libDoc = await libCol.findOne({ name: { $regex: new RegExp(`^${escaped}$`, 'i') } })
         if (!libDoc) {
-          // Auto-create a minimal library entry (unit "не задано") so a later PATCH
-          // /exercises/:name can set weight_unit once — never invent equipment/unit.
-          const created = { name: entry.name, muscle_group: null, equipment: null, weight_unit: null, created_at: new Date() }
+          // Auto-create a minimal library entry. For this route, numeric dictated
+          // loads are canonical kg input; equipment/muscle metadata stays unknown.
+          const created = { name: entry.name, muscle_group: null, equipment: null, weight_unit: 'kg', created_at: new Date() }
           const insertResult = await libCol.insertOne(created)
           libDoc = { ...created, _id: insertResult.insertedId }
+        } else if (libDoc.weight_unit == null) {
+          await libCol.updateOne(
+            { _id: libDoc._id },
+            { $set: { weight_unit: 'kg', updated_at: new Date() } }
+          )
+          libDoc = { ...libDoc, weight_unit: 'kg' }
         }
         newExercises.push(buildExerciseFromParsed(entry, libDoc.weight_unit ?? null))
       }
