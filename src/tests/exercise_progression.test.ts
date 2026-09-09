@@ -226,14 +226,14 @@ describe('evaluateProgression — all 8 truth-table outputs, each with >=1 test'
     expect(r.reason_code).toBe('range_top_reached')
   })
 
-  it('#8 add_reps/below_range_top — reference: жим 8x80·7x80·6x80 at 8-12 (owner\'s falsifying case: never reaches top, but is NOT below the bottom either)', () => {
+  it('#8 reduce_weight/weight_too_high (default variant, now mean per #1291 owner decision) — reference: жим 8x80·7x80·6x80 at 8-12. This fixture is still the owner\'s falsifying case for the OLD "reach top on ALL sets" rule (max rep 8 never nears high=12 under any variant); with the default now mean(8,7,6)=7 < low(8), it additionally goes below the range bottom — updated from the earlier expectation of add_reps/below_range_top, which held only before the owner picked mean as the default', () => {
     const r = evaluateProgression({
       exerciseName: 'Жим в нахилі', weightUnit: 'kg', targetRepsRaw: '8-12',
       sessions: [session('2026-09-09', [{ weight_kg: 80, reps: 8 }, { weight_kg: 80, reps: 7 }, { weight_kg: 80, reps: 6 }])],
     })
     expect(r.working_weight_kg).toBe(80)
-    expect(r.next_action).toBe('add_reps')
-    expect(r.reason_code).toBe('below_range_top')
+    expect(r.next_action).toBe('reduce_weight')
+    expect(r.reason_code).toBe('weight_too_high')
   })
 })
 
@@ -248,13 +248,13 @@ describe('evaluateProgression — priority order on a conflicting input (#10.2 a
   })
 })
 
-describe('TOP_OF_RANGE_RULE — parameterized across all 4 candidate variants (owner decision pending, #1291)', () => {
+describe('TOP_OF_RANGE_RULE — parameterized across all 4 candidate variants (owner decision 2026-09-09 = mean, #1291)', () => {
   // жим-shaped fixture, fixed weight so ALL 3 sets are "working sets": reps [8,7,6].
   const fixture = () => [session('2026-09-09', [
     { weight_kg: 80, reps: 8 }, { weight_kg: 80, reps: 7 }, { weight_kg: 80, reps: 6 },
   ])]
 
-  it('documents that TOP_OF_RANGE_RULE is a flagged pending value, one of the 4 known variants', () => {
+  it('documents that TOP_OF_RANGE_RULE is the owner-approved value, one of the 4 known variants', () => {
     expect(['all', 'first', 'mean', 'best']).toContain(TOP_OF_RANGE_RULE)
   })
 
@@ -282,6 +282,20 @@ describe('TOP_OF_RANGE_RULE — parameterized across all 4 candidate variants (o
       exerciseName: 'Жим в нахилі', weightUnit: 'kg', targetRepsRaw: '8-9', sessions: fixture(), variant: 'first',
     })
     expect(first.next_action).not.toBe('reduce_weight')
+  })
+
+  it('range 7-8, variant=mean, reps 8/8/7 -> RAW fraction 7.67 stays below top (add_reps); rounding to 8 would wrongly flip it to add_weight — rounding is forbidden', () => {
+    // raw mean = (8+8+7)/3 = 7.6666... — meetsTop() must compare this UNROUNDED against
+    // high=8. If someone "improved" repsStatValue()/meetsTop() to round the fraction
+    // (Math.round(7.666...) === 8), 8 >= high(8) would be true and the verdict would
+    // flip to add_weight/range_top_reached. This test locks the raw-fraction contract.
+    const r = evaluateProgression({
+      exerciseName: 'Жим в нахилі', weightUnit: 'kg', targetRepsRaw: '7-8',
+      sessions: [session('2026-09-09', [{ weight_kg: 80, reps: 8 }, { weight_kg: 80, reps: 8 }, { weight_kg: 80, reps: 7 }])],
+      variant: 'mean',
+    })
+    expect(r.next_action).toBe('add_reps')
+    expect(r.reason_code).toBe('below_range_top')
   })
 })
 
