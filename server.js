@@ -297,6 +297,7 @@ app.use('/api/nutrition/recognize', require('./routes/nutrition_recognize')(getD
 app.use('/api/habits', require('./routes/habits')(getDB))
 app.use('/api/profile', require('./routes/personal_profile')(getDB))
 app.use('/api/recommendations', require('./routes/recommendations')(getDB))
+app.use('/api/training-program', require('./routes/training_program')(getDB))
 
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }))
