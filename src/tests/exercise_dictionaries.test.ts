@@ -17,8 +17,10 @@ const {
   mapMuscleToGroup,
   resolvePrimaryMuscleGroup,
   resolveLibraryEquipmentOverwrite,
+  getEquipmentLabelsByOurEnum,
   DICTIONARY_A_STATUS,
   DISPLAY_LABELS_UA,
+  EQUIPMENT_SOURCE_TO_OURS,
 } = require('../../lib/exercise-dictionaries')
 
 // The exact 13 equipment values live-measured against dist/exercises.json (876 rows,
@@ -210,6 +212,61 @@ describe('Dictionary A — reviewed final labels (#1332 QA-fail fix, #1335 final
         expect(typeof label).toBe('string')
         expect(label.trim().length).toBeGreaterThan(0)
       }
+    }
+  })
+})
+
+/**
+ * #1334 (Ф3/#1331, ЕТАП 1б, comment #7581 §2/#7585) — RANGE-COVERAGE test for the
+ * A∘B equipment-label composition. Dictionary A is keyed by the SOURCE term and only
+ * 5/12 keys are byte-identical to our enum — a naive `DISPLAY_LABELS_UA.equipment[ours]`
+ * lookup silently misses the other 7 (empty chip, no thrown error, no failing test
+ * unless it checks the FULL range). This iterates every value in
+ * `EQUIPMENT_SOURCE_TO_OURS`'s non-null range — not a spot-check of 2-3 values — so a
+ * future new equipment value that breaks the composition fails loudly here.
+ */
+describe('getEquipmentLabelsByOurEnum — A∘B composition range coverage (#1334 ЕТАП 1б)', () => {
+  const OUR_ENUM_VALUES: string[] = Array.from(
+    new Set(Object.values(EQUIPMENT_SOURCE_TO_OURS).filter((v): v is string => v !== null))
+  )
+
+  it('the our-enum range has exactly 12 distinct values (1:1 composition, no collisions)', () => {
+    expect(OUR_ENUM_VALUES.length).toBe(12)
+  })
+
+  it('every value in the our-enum range has EXACTLY one non-empty label', () => {
+    const labels = getEquipmentLabelsByOurEnum()
+    for (const oursKey of OUR_ENUM_VALUES) {
+      expect(Object.prototype.hasOwnProperty.call(labels, oursKey)).toBe(true)
+      expect(typeof labels[oursKey]).toBe('string')
+      expect(labels[oursKey].trim().length).toBeGreaterThan(0)
+    }
+    // No stray keys beyond the our-enum range either.
+    expect(Object.keys(labels).sort()).toEqual([...OUR_ENUM_VALUES].sort())
+  })
+
+  it('renamed/new values resolve to Dictionary A labels, not their raw source term', () => {
+    const labels = getEquipmentLabelsByOurEnum()
+    expect(labels.bodyweight).toBe('власна вага') // renamed from source "body only"
+    expect(labels.kettlebell).toBe('гирі') // renamed from source "kettlebells"
+    expect(labels.ez_curl_bar).toBe('EZ-гриф')
+    expect(labels.other).toBe('інше обладнання') // must not read as "no equipment"
+  })
+
+  it('keeps the 5 pre-#1332 byte-identical keys resolvable', () => {
+    const labels = getEquipmentLabelsByOurEnum()
+    for (const k of ['barbell', 'dumbbell', 'cable', 'machine']) {
+      expect(labels[k]).toBe(DISPLAY_LABELS_UA.equipment[k])
+    }
+  })
+
+  it('throws instead of silently emitting an empty label for a missing Dictionary A entry', () => {
+    const original = DISPLAY_LABELS_UA.equipment.barbell
+    delete DISPLAY_LABELS_UA.equipment.barbell
+    try {
+      expect(() => getEquipmentLabelsByOurEnum()).toThrow()
+    } finally {
+      DISPLAY_LABELS_UA.equipment.barbell = original // restore — module-level shared state
     }
   })
 })

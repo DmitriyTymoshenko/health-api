@@ -224,6 +224,39 @@ describe('GET /api/workouts/exercises/catalog — equipment/muscle filters use t
     expect(res.status).toBe(200)
     expect(res.body.items.map((i: Doc) => i.source_id)).toEqual(['Romanian_Deadlift'])
   })
+
+  // #1334 acceptance #3: equipment:null ("не вказано") must be a SELECTABLE, explicit
+  // filter state, not silently folded into a working value or unreachable.
+  it('equipment=__null__ selects the explicit "не вказано" (source doesn\'t know) rows', async () => {
+    const res = await request(makeApp(CATALOG)).get('/api/workouts/exercises/catalog').query({ equipment: '__null__' })
+    expect(res.status).toBe(200)
+    expect(res.body.items.map((i: Doc) => i.source_id)).toEqual(['90_90_Hamstring'])
+  })
+
+  it('equipment=__null__ is disjoint from every real equipment value (no overlap)', async () => {
+    const nullRes = await request(makeApp(CATALOG)).get('/api/workouts/exercises/catalog').query({ equipment: '__null__' })
+    const barbellRes = await request(makeApp(CATALOG)).get('/api/workouts/exercises/catalog').query({ equipment: 'barbell' })
+    const nullIds = nullRes.body.items.map((i: Doc) => i.source_id)
+    const barbellIds = barbellRes.body.items.map((i: Doc) => i.source_id)
+    expect(nullIds.filter((id: string) => barbellIds.includes(id))).toHaveLength(0)
+  })
+})
+
+describe('GET /api/workouts/exercises/catalog/labels — Dictionary A∘B equipment labels (#1334 ЕТАП 1б)', () => {
+  it('returns a label for every value our enum actually uses, keyed by our enum', async () => {
+    const res = await request(makeApp(CATALOG)).get('/api/workouts/exercises/catalog/labels')
+    expect(res.status).toBe(200)
+    expect(res.body.equipment.bodyweight).toBe('власна вага')
+    expect(res.body.equipment.kettlebell).toBe('гирі')
+    expect(res.body.equipment.barbell).toBe('штанга')
+    expect(res.body.equipment.other).toBe('інше обладнання')
+  })
+
+  it('is registered BEFORE /:source_id — "labels" is never swallowed as a source_id lookup', async () => {
+    const res = await request(makeApp(CATALOG)).get('/api/workouts/exercises/catalog/labels')
+    expect(res.status).not.toBe(404)
+    expect(res.body).not.toHaveProperty('source_id')
+  })
 })
 
 describe('GET /api/workouts/exercises/catalog — list never carries heavy instruction fields', () => {
