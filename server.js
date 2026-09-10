@@ -28,6 +28,13 @@ const JSON_BODY_LIMIT = process.env.HEALTH_API_JSON_LIMIT || '10mb'
 // then and say so explicitly — don't silently re-add a bare cors().
 app.use(express.json({ limit: JSON_BODY_LIMIT }))
 
+// #1332: exercises_catalog images (free-exercise-db, Unlicense — downloaded to OUR host
+// by scripts/migrate-exercises-catalog-1332.js, never hotlinked from
+// raw.githubusercontent.com). Served under /uploads/exercises/<source_id>/<n>.jpg;
+// express.static sets content-type from the file extension, so a real .jpg here always
+// answers image/jpeg — no route logic needed beyond mounting the directory.
+app.use('/uploads/exercises', express.static(path.join(__dirname, 'uploads', 'exercises')))
+
 let db
 
 async function connectDB() {
@@ -54,6 +61,10 @@ async function connectDB() {
   // auto-expires unused state after 10 min so a callback with a stale/replayed state 404s
   // out on its own without a cleanup job.
   await db.collection('whoop_oauth_state').createIndex({ createdAt: 1 }, { expireAfterSeconds: 600 })
+  // #1332: exercises_catalog key is source_id (free-exercise-db's `id`), never the
+  // name — see lib/exercise-dictionaries.js header for why. Unique so a re-run of the
+  // migration script (or a future refresh) upserts instead of duplicating.
+  await db.collection('exercises_catalog').createIndex({ source_id: 1 }, { unique: true })
 
   console.log('Indexes created')
   return db
