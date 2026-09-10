@@ -5,7 +5,13 @@
  */
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { toWeightKg, buildExerciseFromParsed, mergeExercisesIntoDoc, exercisesNeedingUnit } = require('../../lib/workout-log-write')
+const {
+  toWeightKg,
+  buildExerciseFromParsed,
+  mergeExercisesIntoDoc,
+  exercisesNeedingUnit,
+  backfillWeightUnitInSession,
+} = require('../../lib/workout-log-write')
 
 describe('toWeightKg', () => {
   it('kg unit -> passthrough', () => {
@@ -119,6 +125,51 @@ describe('exercisesNeedingUnit — #1318 KROK 1: session-level "needs unit clari
   it('a set with no weight_input at all (bodyweight-shaped) is not mistaken for "needs unit"', () => {
     const exercises = [{ name: 'Планка', sets: [{ reps: 60, weight_input: null, weight_kg: null }] }]
     expect(exercisesNeedingUnit(exercises)).toEqual([])
+  })
+})
+
+describe('backfillWeightUnitInSession — #1318 KROK 2: postfactum backfill, "ДОПОВНЮЮЧИ наявний запис"', () => {
+  it('the #1318 regression case: розводка 10х235 backfilled as lb -> ~106.6 kg, weight_input untouched', () => {
+    const exercises = [{ name: 'Розводка', sets: [{ reps: 10, weight_input: 235, weight_unit: null, weight_kg: null }] }]
+    const { exercises: updated, changed } = backfillWeightUnitInSession(exercises, 'Розводка', 'lb')
+    expect(changed).toBe(true)
+    expect(updated[0].sets[0]).toEqual({ reps: 10, weight_input: 235, weight_unit: 'lb', weight_kg: 106.59 })
+  })
+
+  it('a different exercise in the same array is left byte-for-byte untouched', () => {
+    const other = { name: 'Жим під нахилом', sets: [{ weight_input: 80, weight_unit: 'kg', weight_kg: 80 }] }
+    const exercises = [{ name: 'Розводка', sets: [{ weight_input: 235, weight_unit: null, weight_kg: null }] }, other]
+    const { exercises: updated } = backfillWeightUnitInSession(exercises, 'Розводка', 'lb')
+    expect(updated[1]).toBe(other) // same reference — untouched branch, not just equal
+  })
+
+  it('an already-resolved set is never reconverted, even if the new unit differs', () => {
+    const exercises = [{ name: 'Скотта', sets: [{ weight_input: 999, weight_unit: 'kg', weight_kg: 999 }] }]
+    const { exercises: updated, changed } = backfillWeightUnitInSession(exercises, 'Скотта', 'lb')
+    expect(changed).toBe(false)
+    expect(updated[0].sets[0]).toEqual({ weight_input: 999, weight_unit: 'kg', weight_kg: 999 })
+  })
+
+  it('a set with no weight_input at all is left alone (not a "needs unit" case)', () => {
+    const exercises = [{ name: 'Планка', sets: [{ reps: 60, weight_input: null, weight_kg: null }] }]
+    const { changed } = backfillWeightUnitInSession(exercises, 'Планка', 'kg')
+    expect(changed).toBe(false)
+  })
+
+  it('mixed sets on one exercise: only the unresolved set is backfilled, the resolved one is untouched', () => {
+    const exercises = [
+      {
+        name: 'Тяга блока',
+        sets: [
+          { weight_input: 52, weight_unit: 'kg', weight_kg: 52 },
+          { weight_input: 66, weight_unit: null, weight_kg: null },
+        ],
+      },
+    ]
+    const { exercises: updated, changed } = backfillWeightUnitInSession(exercises, 'Тяга блока', 'kg')
+    expect(changed).toBe(true)
+    expect(updated[0].sets[0]).toEqual({ weight_input: 52, weight_unit: 'kg', weight_kg: 52 })
+    expect(updated[0].sets[1]).toEqual({ weight_input: 66, weight_unit: 'kg', weight_kg: 66 })
   })
 })
 

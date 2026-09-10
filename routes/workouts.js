@@ -2,7 +2,12 @@ const { Router } = require('express')
 const { hasPositiveWeight } = require('../lib/workout-sets')
 const { evaluateProgression } = require('../lib/exercise-progression')
 const { parseWorkoutLogText } = require('../lib/workout-log-parser')
-const { buildExerciseFromParsed, mergeExercisesIntoDoc, exercisesNeedingUnit } = require('../lib/workout-log-write')
+const {
+  buildExerciseFromParsed,
+  mergeExercisesIntoDoc,
+  exercisesNeedingUnit,
+  backfillWeightUnitInSession,
+} = require('../lib/workout-log-write')
 
 const DEFAULT_EXERCISES = [
   // Груди
@@ -170,6 +175,61 @@ module.exports = function (getDB) {
 
       const updated = await col.findOne({ name })
       res.json(updated)
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // PATCH /api/workouts/exercises/:name/weight-unit — #1318 KROK 2 (health-api half,
+  // owner "Так, підходить" 2026-09-10, #1318 comment #7454): the ONE write path for
+  // exercises_library.weight_unit. Separate from the generic content-PATCH above on
+  // purpose — this one has a real side effect (backfill), the content one never does.
+  // Called once per exercise, by whatever asks the owner the question (currently: no
+  // caller wired yet — the Telegram-bot side that detects `needs_unit_clarification`
+  // on a /log-text response and asks "кг чи фунти?" lives in chuttyevo-agent's src/,
+  // a separate repo/zone; this route is the contract that side calls into).
+  //
+  // Exact-match findOne (canonical names, same as the content-PATCH above). On success,
+  // walks EVERY `workouts` session containing this exercise and recomputes weight_kg for
+  // any set that was left unresolved (weight_input present, weight_kg null) — "постфактум,
+  // ДОПОВНЮЮЧИ наявний запис" (owner #7454): existing sessions are augmented, never
+  // rejected or re-asked. A set that already has a resolved weight_kg is left untouched.
+  router.patch('/exercises/:name/weight-unit', async (req, res) => {
+    try {
+      const db = getDB()
+      const name = req.params.name
+      const { weight_unit } = req.body
+      if (weight_unit !== 'kg' && weight_unit !== 'lb') {
+        return res.status(400).json({ error: "weight_unit must be 'kg' or 'lb'" })
+      }
+
+      const libCol = db.collection('exercises_library')
+      const libResult = await libCol.updateOne({ name }, { $set: { weight_unit, updated_at: new Date() } })
+      if (libResult.matchedCount === 0) {
+        return res.status(404).json({ error: 'Exercise not found', name })
+      }
+      const exercise = await libCol.findOne({ name })
+
+      const workoutsCol = db.collection('workouts')
+      const sessions = await workoutsCol.find({ 'exercises.name': name }).toArray()
+
+      let backfilledSessions = 0
+      let backfilledSets = 0
+      for (const session of sessions) {
+        const { exercises, changed } = backfillWeightUnitInSession(session.exercises, name, weight_unit)
+        if (!changed) continue
+        const before = (session.exercises.find(e => e.name === name)?.sets || []).filter(
+          s => s.weight_input != null && s.weight_kg == null
+        ).length
+        await workoutsCol.updateOne(
+          { _id: session._id },
+          { $set: { exercises, needs_unit_clarification: exercisesNeedingUnit(exercises), updated_at: new Date() } }
+        )
+        backfilledSessions += 1
+        backfilledSets += before
+      }
+
+      res.json({ exercise, backfilled_sessions: backfilledSessions, backfilled_sets: backfilledSets })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
