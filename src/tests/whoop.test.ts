@@ -609,6 +609,62 @@ describe('sync-whoop — #825 sleep selection: cycle_id filter before pickLonger
   })
 })
 
+describe('sync-whoop — #1324 cycle dedup: reject a candidate already assigned to the PREVIOUS day', () => {
+  const { filterCyclesByPrevDay, prevCalendarDateStr } = require('../../scripts/sync-whoop')
+
+  // Raw fixture from a live Mongo read (whoop_cycles, 10.09.2026 04:23 UTC sync,
+  // task #1324): cycle_id=1781650684, start=2026-09-08T20:55:07.390Z, end:null
+  // (still open at sync time) was correctly the settled record for
+  // dateStr='2026-09-09' AND came back unfiltered for dateStr='2026-09-10' the
+  // same run — same cycle_id, bit-identical strain=15.1223755/calories=3493
+  // written under BOTH dates before this fix (verified live, not simulated).
+  const cyclesFor0910 = [
+    { id: 1781650684, start: '2026-09-08T20:55:07.390Z', end: null, score_state: 'SCORED',
+      score: { strain: 15.1223755, kilojoule: 14615, average_heart_rate: 68, max_heart_rate: 154 } },
+  ]
+
+  it('RED: without the filter, the stale open cycle reproduces the duplicate (this is exactly what the loop upserted for 2026-09-10 pre-fix)', () => {
+    // Mirrors syncDate()'s pre-#1324 loop: no filtering, cycles[] fed straight in.
+    let cycleResult: { cycle_id: string } | null = null
+    for (const c of cyclesFor0910) cycleResult = { cycle_id: String(c.id) }
+    expect(cycleResult!.cycle_id).toBe('1781650684') // == what 2026-09-09 already has — the bug
+  })
+
+  it('GREEN: filterCyclesByPrevDay drops the candidate whose id matches the previous day’s stored cycle_id', () => {
+    const eligible = filterCyclesByPrevDay(cyclesFor0910, '1781650684') // prevDoc.cycle_id for 2026-09-09
+    expect(eligible).toEqual([]) // 2026-09-10 is left empty (null strain/calories), not duplicated
+  })
+
+  it('passes candidates through unchanged when none match the previous day', () => {
+    const eligible = filterCyclesByPrevDay(cyclesFor0910, '9999999999')
+    expect(eligible).toEqual(cyclesFor0910)
+  })
+
+  it('passes candidates through unchanged when there is no previous-day anchor (no prior doc)', () => {
+    expect(filterCyclesByPrevDay(cyclesFor0910, null)).toEqual(cyclesFor0910)
+  })
+
+  it('handles a genuinely empty candidate array', () => {
+    expect(filterCyclesByPrevDay([], '1781650684')).toEqual([])
+  })
+
+  it('still selects a genuinely NEW cycle for the date when one exists alongside a stale one', () => {
+    const mixed = [
+      { id: 1781650684, start: '2026-09-08T20:55:07.390Z', end: null, score: { strain: 15.1223755 } }, // stale, belongs to 09-09
+      { id: 1782999999, start: '2026-09-09T21:05:00.000Z', end: null, score: { strain: 2.1 } }, // genuinely new for 09-10
+    ]
+    const eligible = filterCyclesByPrevDay(mixed, '1781650684')
+    expect(eligible.map((c: { id: number }) => c.id)).toEqual([1782999999])
+  })
+
+  it('prevCalendarDateStr computes the previous UTC calendar date', () => {
+    expect(prevCalendarDateStr('2026-09-10')).toBe('2026-09-09')
+    expect(prevCalendarDateStr('2026-09-01')).toBe('2026-08-31')
+    expect(prevCalendarDateStr('2026-01-01')).toBe('2025-12-31')
+    expect(prevCalendarDateStr('2024-03-01')).toBe('2024-02-29') // leap year
+  })
+})
+
 describe('toDateStr — date formatting', () => {
   it('formats date as YYYY-MM-DD', () => {
     const d = new Date('2026-04-17T00:00:00')

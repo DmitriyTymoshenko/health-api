@@ -539,6 +539,39 @@ function pickLongerSleep(current, candidate) {
   return (candidate.total_sleep_ms ?? -1) > (current.total_sleep_ms ?? -1) ? candidate : current
 }
 
+// #1324 fix: an OPEN cycle (score_state can read SCORED with `end: null` — WHOOP
+// keeps rolling a live strain/calories score before the cycle formally closes)
+// satisfies the WHOOP API's overlap filter for the query window of MULTIPLE
+// consecutive dates, not just the one it truly belongs to. Live-verified
+// 10.09.2026: cycle_id=1781650684 (start=2026-09-08T20:55:07.390Z, end:null at
+// sync time) was correctly the settled cycle for dateStr='2026-09-09' AND ALSO
+// came back (unfiltered) for dateStr='2026-09-10''s `/cycle` query the same run
+// — the loop below had no check against what was already written for the
+// PREVIOUS calendar day, so it silently upserted the exact same strain/calories
+// under the new date (strain=15.1223755, calories=3493 bit-identical both days,
+// whoop_cycles.cycle_id identical too — confirmed via live Mongo read, not
+// inferred). A WHOOP cycle belongs to exactly ONE calendar day by the app's own
+// model (whoop_cycles has a UNIQUE index on `date`, one row per day) — so any
+// candidate whose id already IS today's `date - 1`'s stored cycle_id is, by
+// definition, not a NEW cycle for the date being synced. Filtering by identity
+// against the adjacent day's stored value is robust regardless of the exact
+// UTC/Kyiv boundary math (measured: cycle.start times cluster within minutes of
+// Kyiv midnight in EITHER direction across the two the-boundary fixtures on
+// file — #825's ~00:10-00:31 Kyiv-after vs this ticket's ~23:36-23:55
+// Kyiv-before — so no fixed cutoff offset is safe to hardcode; identity against
+// the already-settled neighbor is). Exported for direct unit testing.
+function filterCyclesByPrevDay(cycles, prevCycleId) {
+  if (!cycles || !cycles.length || !prevCycleId) return cycles || []
+  return cycles.filter(c => String(c.id) !== prevCycleId)
+}
+
+// Pure: previous calendar date string for a 'YYYY-MM-DD' dateStr (UTC-safe,
+// mirrors dateRange()'s own Date.UTC arithmetic). Exported for unit testing.
+function prevCalendarDateStr(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number)
+  return toDateStr(new Date(Date.UTC(y, m - 1, d - 1)))
+}
+
 // #825 fix: the `/cycle` branch above settles on the OLDEST cycle in the UTC-day
 // query window (loop-upsert without break over a DESC array — the last iterated
 // element survives, which happens to be the correct Kyiv-day cycle). `/recovery`
@@ -637,7 +670,16 @@ async function syncDate(db, token, dateStr) {
   try {
     const cyclesResp = await whoopGet(token,
       `/cycle?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`)
-    const cycles = cyclesResp?.records || []
+    const rawCycles = cyclesResp?.records || []
+    // #1324: reject any candidate already assigned to the PREVIOUS calendar day —
+    // see filterCyclesByPrevDay doc comment above for the live-verified mechanism.
+    const prevDateStr = prevCalendarDateStr(dateStr)
+    const prevDoc = await db.collection('whoop_cycles').findOne({ date: prevDateStr })
+    const cycles = filterCyclesByPrevDay(rawCycles, prevDoc?.cycle_id ?? null)
+    if (rawCycles.length && !cycles.length) {
+      log(`  [cycles] ${dateStr}: all ${rawCycles.length} candidate(s) already belong to ${prevDateStr} ` +
+        `(cycle_id=${prevDoc.cycle_id}, still open) — leaving ${dateStr} empty rather than duplicating`)
+    }
     for (const c of cycles) {
       const kcal = c.score?.kilojoule ? Math.round(c.score.kilojoule / 4.184) : null
       const doc = {
@@ -911,6 +953,7 @@ module.exports = { refreshToken, getToken, alertReauthIfDue, markSyncSuccess, Re
   REFRESH_THRESHOLD_MS, MIN_REFRESH_INTERVAL_MS, REAUTH_DEDUP_HOURS, RETRY_5XX_PAUSE_MS,
   DEFAULT_UA, buildRequestHeaders, captureSetCookie, cookieHeaderFor, resetCookieJar, buildMetricsDoc, buildSleepMetricFields, pickLongerSleep,
   pickRecoveryByCycle, filterSleepsByCycle,
+  filterCyclesByPrevDay, prevCalendarDateStr,
   preflightProbe }
 
 // Run only when invoked directly, not when required by a test.
