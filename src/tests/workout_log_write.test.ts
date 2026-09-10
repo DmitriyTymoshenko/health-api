@@ -5,7 +5,7 @@
  */
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { toWeightKg, buildExerciseFromParsed, mergeExercisesIntoDoc } = require('../../lib/workout-log-write')
+const { toWeightKg, buildExerciseFromParsed, mergeExercisesIntoDoc, exercisesNeedingUnit } = require('../../lib/workout-log-write')
 
 describe('toWeightKg', () => {
   it('kg unit -> passthrough', () => {
@@ -80,6 +80,45 @@ describe('mergeExercisesIntoDoc — idempotency by (date is the doc, exercise na
     const merged = mergeExercisesIntoDoc(session1, session1)
     expect(merged).toHaveLength(2)
     expect(merged).toEqual(session1)
+  })
+})
+
+describe('exercisesNeedingUnit — #1318 KROK 1: session-level "needs unit clarification" marker', () => {
+  it('empty exercises -> empty list', () => {
+    expect(exercisesNeedingUnit([])).toEqual([])
+    expect(exercisesNeedingUnit(undefined as any)).toEqual([])
+  })
+
+  it('an exercise with a resolved unit (weight_kg present) is NOT flagged', () => {
+    const exercises = [{ name: 'Жим під нахилом', sets: [{ weight_input: 80, weight_kg: 80 }] }]
+    expect(exercisesNeedingUnit(exercises)).toEqual([])
+  })
+
+  it('an exercise with weight_input but no resolved weight_kg IS flagged — the #1318 regression case', () => {
+    // "Розводка 10х235" — weight_input=235 preserved, weight_kg stays null because the
+    // unit is unknown (never silently defaulted to kg per #1318 KROK 1).
+    const exercises = [{ name: 'Розводка', sets: [{ weight_input: 235, weight_kg: null }] }]
+    expect(exercisesNeedingUnit(exercises)).toEqual(['Розводка'])
+  })
+
+  it('mixed session: only the unresolved exercise is flagged, the resolved one is not', () => {
+    const exercises = [
+      { name: 'Жим під нахилом', sets: [{ weight_input: 80, weight_kg: 80 }] },
+      { name: 'Скотта', sets: [{ weight_input: 160, weight_kg: null }, { weight_input: 145, weight_kg: null }] },
+    ]
+    expect(exercisesNeedingUnit(exercises)).toEqual(['Скотта'])
+  })
+
+  it('one flagged set is enough to flag the whole exercise, even if other sets on it resolved', () => {
+    const exercises = [
+      { name: 'Тяга блока', sets: [{ weight_input: 52, weight_kg: 52 }, { weight_input: 66, weight_kg: null }] },
+    ]
+    expect(exercisesNeedingUnit(exercises)).toEqual(['Тяга блока'])
+  })
+
+  it('a set with no weight_input at all (bodyweight-shaped) is not mistaken for "needs unit"', () => {
+    const exercises = [{ name: 'Планка', sets: [{ reps: 60, weight_input: null, weight_kg: null }] }]
+    expect(exercisesNeedingUnit(exercises)).toEqual([])
   })
 })
 

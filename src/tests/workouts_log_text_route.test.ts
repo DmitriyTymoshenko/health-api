@@ -81,7 +81,7 @@ describe('POST /api/workouts/log-text', () => {
     expect(res.body.skipped).toBeDefined()
   })
 
-  it("201, creates a new session doc, initializes missing weight_unit to kg, preserves weight_input the owner said", async () => {
+  it("201, creates a new session doc, NEVER silently defaults an unknown unit to kg, preserves weight_input the owner said, flags the session as needing clarification (#1318 KROK 1)", async () => {
     const { app, workouts } = makeApp({
       exercises: [{ _id: 'lib_1', name: 'Тяга блока', weight_unit: null }],
     })
@@ -97,15 +97,43 @@ describe('POST /api/workouts/log-text', () => {
     const sets = res.body.exercises[0].sets
     expect(sets.map((s: any) => s.reps)).toEqual([8, 8, 8, 8])
     expect(sets.map((s: any) => s.weight_input)).toEqual([52, 66, 73, 73])
-    expect(sets.map((s: any) => s.weight_kg)).toEqual([52, 66, 73, 73])
+    // unit not set on this exercise -> weight_kg stays null, NEVER silently defaulted to
+    // kg (this is exactly the #1318 bug: 0ecbcf0 wrote [52,66,73,73] here before the fix)
+    expect(sets.every((s: any) => s.weight_kg === null)).toBe(true)
+    expect(res.body.needs_unit_clarification).toEqual(['Тяга блока'])
     expect(workouts).toHaveLength(1)
+    expect(workouts[0].needs_unit_clarification).toEqual(['Тяга блока'])
   })
 
-  it('auto-creates a missing exercises_library entry with kg unit, does not invent equipment', async () => {
+  it("#1318 regression: dictated 'Розводка: 10х235' does NOT resolve to weight_kg=235 (235 is the owner's lb stack reading, not kg) — weight_input is preserved, weight_kg stays null, exercise is flagged", async () => {
+    const { app } = makeApp({ exercises: [] })
+    const res = await request(app).post('/api/workouts/log-text').send({ date: '2026-09-09', text: 'Розводка: 10х235' })
+    const set = res.body.exercises[0].sets[0]
+    expect(set.weight_input).toBe(235)
+    expect(set.weight_kg).not.toBe(235)
+    expect(set.weight_kg).toBeNull()
+    expect(res.body.needs_unit_clarification).toEqual(['Розводка'])
+  })
+
+  it('auto-creates a missing exercises_library entry with unit "не задано" (null), does not invent equipment or a unit', async () => {
     const { app, exercises } = makeApp({ exercises: [] })
     await request(app).post('/api/workouts/log-text').send({ date: '2026-09-09', text: 'Розводка: 10х235' })
     expect(exercises).toHaveLength(1)
-    expect(exercises[0]).toMatchObject({ name: 'Розводка', equipment: null, weight_unit: 'kg' })
+    expect(exercises[0]).toMatchObject({ name: 'Розводка', equipment: null, weight_unit: null })
+  })
+
+  it('a mixed session (one exercise with a known unit, one without) flags only the unresolved exercise', async () => {
+    const { app } = makeApp({
+      exercises: [
+        { _id: 'lib_1', name: 'Жим під нахилом', weight_unit: 'kg' },
+        { _id: 'lib_2', name: 'Скотта', weight_unit: null },
+      ],
+    })
+    const res = await request(app).post('/api/workouts/log-text').send({
+      date: '2026-09-09',
+      text: 'Жим під нахилом: 8х80\nСкотта: 6х160 · 6х160 · 6х145',
+    })
+    expect(res.body.needs_unit_clarification).toEqual(['Скотта'])
   })
 
   it('resolves weight_kg when the exercise has a known kg unit', async () => {
@@ -127,6 +155,22 @@ describe('POST /api/workouts/log-text', () => {
     expect(workouts).toHaveLength(1)
     expect(workouts[0].exercises).toHaveLength(1)
     expect(workouts[0].exercises[0].sets).toHaveLength(4)
+  })
+
+  it('needs_unit_clarification clears once the library entry gets a unit and the exercise is re-merged (KROK 2 will drive this via its own PATCH)', async () => {
+    const { app, exercises, workouts } = makeApp({ exercises: [{ _id: 'lib_1', name: 'Тяга блока', weight_unit: null }] })
+    const text = 'Тяга блока: 8х52 · 8х66 · 8х73 · 8х73'
+    const res1 = await request(app).post('/api/workouts/log-text').send({ date: '2026-09-09', text })
+    expect(res1.body.needs_unit_clarification).toEqual(['Тяга блока'])
+
+    // simulate KROK 2 resolving the unit (owner answered "кг" once) — this route itself
+    // never writes weight_unit, some future mechanism will
+    exercises[0].weight_unit = 'kg'
+
+    const res2 = await request(app).post('/api/workouts/log-text').send({ date: '2026-09-09', text })
+    expect(res2.body.needs_unit_clarification).toEqual([])
+    expect(res2.body.exercises[0].sets.every((s: any) => s.weight_kg !== null)).toBe(true)
+    expect(workouts[0].needs_unit_clarification).toEqual([])
   })
 
   it('a second exercise on the same date is appended to the SAME session doc, not a new one', async () => {

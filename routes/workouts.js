@@ -2,7 +2,7 @@ const { Router } = require('express')
 const { hasPositiveWeight } = require('../lib/workout-sets')
 const { evaluateProgression } = require('../lib/exercise-progression')
 const { parseWorkoutLogText } = require('../lib/workout-log-parser')
-const { buildExerciseFromParsed, mergeExercisesIntoDoc } = require('../lib/workout-log-write')
+const { buildExerciseFromParsed, mergeExercisesIntoDoc, exercisesNeedingUnit } = require('../lib/workout-log-write')
 
 const DEFAULT_EXERCISES = [
   // Груди
@@ -605,15 +605,23 @@ module.exports = function (getDB) {
   // POSTs structured JSON to `/` above; this route does the free-text -> structured-JSON
   // step and then reuses the SAME collection/shape, no schema change.
   //
-  // weight_unit lives on the EXERCISE (#1291 §5, owner "затверджую" 09.09). The
-  // free-text strength log is a weighted input path by definition for #1314, so the
-  // first dictated numeric load initializes a missing exercise unit to kg and writes
-  // canonical weight_kg immediately. The raw weight_input is still preserved.
+  // weight_unit lives on the EXERCISE (#1291 §5, owner "затверджую" 09.09). #1318
+  // KROK 1 (S-slice, owner "Запускай 1318" 2026-09-10): an unknown unit is an EXPLICIT
+  // state, never a silent kg default — 0ecbcf0 (#1314 follow-up) had briefly made the
+  // first dictated numeric load initialize a missing exercise unit to 'kg', which is
+  // exactly the class of bug #1318 exists to close (розводка 235 is lb, not kg). The
+  // raw weight_input is always preserved regardless of whether the unit is known; a set
+  // with an unresolved unit gets weight_kg=null and its exercise name is surfaced on the
+  // session doc via `needs_unit_clarification` so the session is never silently wrong —
+  // KROK 2 (crosses into the Telegram bot) asks the owner once per exercise and writes
+  // exercises_library.weight_unit; this route does NOT guess or write that field itself.
   //
   // Idempotency (#1314 acceptance) is scoped to {date, source:'telegram-log'}: re-POSTing
   // the same text merges into the SAME session doc, replacing each exercise's sets by
   // name rather than duplicating — a manual UI entry (source:'manual') for the same date
-  // is a SEPARATE doc, untouched.
+  // is a SEPARATE doc, untouched. `needs_unit_clarification` is recomputed from the FULL
+  // merged exercises array on every write, so it always reflects current session state
+  // (e.g. clears once KROK 2 backfills a unit and the exercise is re-merged).
   router.post('/log-text', async (req, res) => {
     try {
       const db = getDB()
@@ -636,17 +644,11 @@ module.exports = function (getDB) {
         const escaped = entry.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
         let libDoc = await libCol.findOne({ name: { $regex: new RegExp(`^${escaped}$`, 'i') } })
         if (!libDoc) {
-          // Auto-create a minimal library entry. For this route, numeric dictated
-          // loads are canonical kg input; equipment/muscle metadata stays unknown.
-          const created = { name: entry.name, muscle_group: null, equipment: null, weight_unit: 'kg', created_at: new Date() }
+          // Auto-create a minimal library entry — unit "не задано" (#1318 KROK 1: never
+          // guess). KROK 2 fills weight_unit once the owner answers, this route never does.
+          const created = { name: entry.name, muscle_group: null, equipment: null, weight_unit: null, created_at: new Date() }
           const insertResult = await libCol.insertOne(created)
           libDoc = { ...created, _id: insertResult.insertedId }
-        } else if (libDoc.weight_unit == null) {
-          await libCol.updateOne(
-            { _id: libDoc._id },
-            { $set: { weight_unit: 'kg', updated_at: new Date() } }
-          )
-          libDoc = { ...libDoc, weight_unit: 'kg' }
         }
         newExercises.push(buildExerciseFromParsed(entry, libDoc.weight_unit ?? null))
       }
@@ -661,17 +663,19 @@ module.exports = function (getDB) {
           name: 'Тренування (лог)',
           source: sessionSource,
           exercises: newExercises,
+          needs_unit_clarification: exercisesNeedingUnit(newExercises),
           created_at: new Date(),
         }
         const insertResult = await workoutsCol.insertOne(doc)
         resultDoc = { ...doc, _id: insertResult.insertedId }
       } else {
         const mergedExercises = mergeExercisesIntoDoc(existing.exercises, newExercises)
+        const needsUnitClarification = exercisesNeedingUnit(mergedExercises)
         await workoutsCol.updateOne(
           { _id: existing._id },
-          { $set: { exercises: mergedExercises, updated_at: new Date() } }
+          { $set: { exercises: mergedExercises, needs_unit_clarification: needsUnitClarification, updated_at: new Date() } }
         )
-        resultDoc = { ...existing, exercises: mergedExercises }
+        resultDoc = { ...existing, exercises: mergedExercises, needs_unit_clarification: needsUnitClarification }
       }
 
       res.status(existing ? 200 : 201).json({ ...resultDoc, skipped: skipped.length > 0 ? skipped : undefined })
