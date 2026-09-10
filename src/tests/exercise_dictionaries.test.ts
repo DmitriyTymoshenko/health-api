@@ -17,6 +17,8 @@ const {
   mapMuscleToGroup,
   resolvePrimaryMuscleGroup,
   resolveLibraryEquipmentOverwrite,
+  DICTIONARY_A_STATUS,
+  DISPLAY_LABELS_UA,
 } = require('../../lib/exercise-dictionaries')
 
 // The exact 13 equipment values live-measured against dist/exercises.json (876 rows,
@@ -147,6 +149,68 @@ describe('resolveLibraryEquipmentOverwrite — the #1310-regression guard', () =
     expect(resolveLibraryEquipmentOverwrite('barbell', 'machine')).toBe('machine')
     // "Молоткові згинання на лаві Скотта" (#1310): ours was dumbbell, source (Machine_Preacher_Curls) says machine
     expect(resolveLibraryEquipmentOverwrite('dumbbell', 'machine')).toBe('machine')
+  })
+})
+
+describe('Dictionary A — reviewed final labels (#1332 QA-fail fix, #1335 final table)', () => {
+  it('is flagged as Lisa-reviewed with the exact literal #1334 stage-2 greps for', () => {
+    // #1334 unblock condition is a literal grep on this string — must not drift.
+    expect(DICTIONARY_A_STATUS).toBe('lisa-reviewed-2026-09-10')
+  })
+
+  // Regression-prone terms called out by name in the #1332 QA-fail fix request —
+  // each one previously shipped a draft value that diverged from #1335's reviewed table.
+  it('force.push is "штовхання", never "жим" (push is broader than press movements)', () => {
+    expect(DISPLAY_LABELS_UA.force.push).toBe('штовхання')
+    expect(DISPLAY_LABELS_UA.force.push).not.toBe('жим')
+  })
+
+  it('muscles.lats is "найширші", never "широчайші" (calque from Russian)', () => {
+    expect(DISPLAY_LABELS_UA.muscles.lats).toBe('найширші')
+    expect(DISPLAY_LABELS_UA.muscles.lats).not.toBe('широчайші')
+  })
+
+  it('equipment.other is "інше обладнання", not a bare "інше" (must not read as "no equipment")', () => {
+    expect(DISPLAY_LABELS_UA.equipment.other).toBe('інше обладнання')
+  })
+
+  it('equipment["body only"] is "власна вага", not "інше обладнання" (must not collide with "other")', () => {
+    expect(DISPLAY_LABELS_UA.equipment['body only']).toBe('власна вага')
+    expect(DISPLAY_LABELS_UA.equipment['body only']).not.toBe(DISPLAY_LABELS_UA.equipment.other)
+  })
+
+  it('mechanic.compound is "базова", mechanic.isolation is "ізольована" (not "багатосуглобова"/"ізолююча")', () => {
+    expect(DISPLAY_LABELS_UA.mechanic.compound).toBe('базова')
+    expect(DISPLAY_LABELS_UA.mechanic.isolation).toBe('ізольована')
+  })
+
+  it('muscles.adductors and muscles.abductors keep deliberately different roots (never conflated)', () => {
+    expect(DISPLAY_LABELS_UA.muscles.adductors).toBe("привідні м'язи")
+    expect(DISPLAY_LABELS_UA.muscles.abductors).toBe("відвідні м'язи")
+    expect(DISPLAY_LABELS_UA.muscles.adductors).not.toBe(DISPLAY_LABELS_UA.muscles.abductors)
+  })
+
+  it('every Dictionary A axis has exactly the term count Lisa reviewed in #1335 (44 total)', () => {
+    const counts = Object.fromEntries(
+      Object.entries(DISPLAY_LABELS_UA).map(([axis, map]) => [axis, Object.keys(map as object).length])
+    )
+    expect(counts).toEqual({
+      equipment: 12,
+      category: 7,
+      level: 3,
+      force: 3,
+      mechanic: 2,
+      muscles: 17,
+    })
+  })
+
+  it('no Dictionary A axis has an empty/placeholder label (no draft leftovers)', () => {
+    for (const map of Object.values(DISPLAY_LABELS_UA)) {
+      for (const label of Object.values(map as Record<string, string>)) {
+        expect(typeof label).toBe('string')
+        expect(label.trim().length).toBeGreaterThan(0)
+      }
+    }
   })
 })
 
