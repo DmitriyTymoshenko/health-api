@@ -2,6 +2,7 @@ const { Router } = require('express')
 const https = require('https')
 const {
   stableDayKcalBasis,
+  resolveDeficitKcal,
   satFatLimitG,
   satFatStatus,
   sugarLimitG,
@@ -235,6 +236,7 @@ module.exports = function (getDB) {
       // local `projectedBurnedEOD - deficit` formula. Same basis as sat_fat/sugar/
       // fiber below — one profile, one day target, everywhere.
       summary.kcal_goal = kcalBasis
+      summary.deficit_kcal = resolveDeficitKcal(profile)
       const { carbs_g: carbsGoalG, fat_g: fatGoalG } = deriveCarbsFatFromKcal(kcalBasis)
       summary.carbs_goal_g = carbsGoalG
       summary.fat_goal_g = fatGoalG
