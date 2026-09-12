@@ -1,4 +1,5 @@
 const { Router } = require('express')
+const { requireAnyField, validateDate } = require('../lib/validate')
 
 module.exports = function (getDB) {
   const router = Router()
@@ -49,7 +50,25 @@ module.exports = function (getDB) {
   })
 
   // POST /api/metrics
-  router.post('/', async (req, res) => {
+  // #1297: requireAnyField over the real WHOOP metric columns (live sample,
+  // `daily_metrics` sorted by `_id` desc). `scripts/sync-whoop.js` writes this
+  // collection directly via the Mongo driver (bypassing this HTTP route
+  // entirely) — this route itself has no confirmed live HTTP caller, so this
+  // only rejects a genuinely empty POST, matching the acceptance criterion.
+  router.post(
+    '/',
+    requireAnyField(
+      'recovery_score',
+      'strain',
+      'sleep_hours',
+      'sleep_performance',
+      'avg_heart_rate',
+      'resting_heart_rate',
+      'calories_burned',
+      'hrv_rmssd'
+    ),
+    validateDate,
+    async (req, res) => {
     try {
       const db = getDB()
       const doc = req.body

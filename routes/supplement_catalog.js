@@ -91,18 +91,17 @@ module.exports = function (getDB) {
     }
   })
 
-  // DELETE /api/catalog/:id
-  router.delete('/:id', async (req, res) => {
-    try {
-      const db = getDB()
-      const id = Number(req.params.id)
-      await db.collection('supplement_catalog').deleteOne({ id })
-      res.json({ ok: true })
-    } catch (err) {
-      res.status(500).json({ error: err.message })
-    }
-  })
-
+  // #1297: GET/POST/DELETE /api/catalog/intake MUST be declared BEFORE the
+  // generic `/:id` DELETE below. Express matches routes in declaration order;
+  // `/intake` is a single path segment so it also matches the `/:id` param
+  // route. With `/:id` first (the original order), `DELETE /api/catalog/intake`
+  // was ALWAYS caught by `router.delete('/:id')`: `Number('intake')` = NaN,
+  // `deleteOne({ id: NaN })` matches nothing, yet the handler still responds
+  // `{ ok: true }` — the unmark button silently never worked, the item just
+  // reappeared after reload. Moving this whole `/intake` block above `/:id`
+  // fixes it for all three verbs (GET/POST were already unaffected since there
+  // is no earlier generic GET/POST `/:id` route, but keeping the trio together
+  // avoids re-introducing the same class if one is ever added above).
   // GET /api/catalog/intake?date=YYYY-MM-DD
   router.get('/intake', async (req, res) => {
     try {
@@ -147,6 +146,18 @@ module.exports = function (getDB) {
       const sid = Number(req.query.supplement_id)
       const date = req.query.date
       await db.collection('supplement_intake').deleteOne({ supplement_id: sid, date })
+      res.json({ ok: true })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // DELETE /api/catalog/:id
+  router.delete('/:id', async (req, res) => {
+    try {
+      const db = getDB()
+      const id = Number(req.params.id)
+      await db.collection('supplement_catalog').deleteOne({ id })
       res.json({ ok: true })
     } catch (err) {
       res.status(500).json({ error: err.message })

@@ -1,4 +1,5 @@
 const { Router } = require('express')
+const { requireFields } = require('../lib/validate')
 // #1295 — /streaks used to fall back to its OWN hardcoded thresholds (calories_limit
 // 2200, protein_min via the plain proteinGoalG() ignoring an explicit profile override,
 // water_min_ml 2500) whenever the `goals` collection had no matching type. Those
@@ -22,7 +23,10 @@ module.exports = function (getDB) {
   })
 
   // POST /api/goals
-  router.post('/', async (req, res) => {
+  // #1297: requireFields('type', 'name') — every live goals document has both
+  // (verified live Mongo read, 6/6 docs); the caller is Lisa's own workflow
+  // (Workouts.jsx comment: "POST/PUT /api/goals"), not a UI form in this repo.
+  router.post('/', requireFields('type', 'name'), async (req, res) => {
     try {
       const db = getDB()
       const doc = req.body

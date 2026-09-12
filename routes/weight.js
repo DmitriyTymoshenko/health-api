@@ -1,4 +1,5 @@
 const { Router } = require('express')
+const { requireFields, validateDate } = require('../lib/validate')
 
 function kyivToday() {
   return new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Kiev' })
@@ -148,15 +149,28 @@ module.exports = function (getDB) {
   })
 
   // POST /api/weight
-  router.post('/', async (req, res) => {
+  // #1297: requireFields('weight_kg') — a weight entry without an actual weight
+  // is meaningless and used to insert silently (`insertOne(req.body)` as-is).
+  // validateDate guards a malformed (non-YYYY-MM-DD) explicit date.
+  router.post('/', requireFields('weight_kg'), validateDate, async (req, res) => {
     try {
       const db = getDB()
       const doc = req.body
       if (!doc.date) doc.date = new Date().toISOString().split('T')[0]
       doc.created_at = new Date()
 
-      const result = await db.collection('weight_log').insertOne(doc)
-      res.status(201).json({ ...doc, _id: result.insertedId })
+      // #1297 (dedup + unique index): `date` now has a unique index — a second
+      // POST for a date that already has an entry MUST NOT throw a raw Mongo
+      // E11000 (500). Upsert "last entry wins" — the same rule the dedup
+      // migration (weight_log_dupes_1297) applied to the pre-existing
+      // duplicates: the most recent submission is treated as the user's
+      // correction for that day.
+      const result = await db.collection('weight_log').findOneAndUpdate(
+        { date: doc.date },
+        { $set: doc },
+        { upsert: true, returnDocument: 'after' }
+      )
+      res.status(201).json(result)
     } catch (err) {
       res.status(500).json({ error: err.message })
     }

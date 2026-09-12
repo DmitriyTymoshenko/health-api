@@ -1,69 +1,28 @@
 import { Request, Response, NextFunction } from 'express'
-import { NutritionInput } from '../types'
 
-/**
- * Normalize nutrition fields:
- * Accepts both protein/fat/carbs and protein_g/fat_g/carbs_g
- * Also normalizes name → food_name and sets default date
- */
-export function normalizeNutrition(req: Request, res: Response, next: NextFunction): void {
-  if (req.body) {
-    const b = req.body as NutritionInput & Record<string, unknown>
-
-    if (b.protein !== undefined && b.protein_g === undefined) {
-      b.protein_g = Number(b.protein)
-    }
-    if (b.fat !== undefined && b.fat_g === undefined) {
-      b.fat_g = Number(b.fat)
-    }
-    if (b.carbs !== undefined && b.carbs_g === undefined) {
-      b.carbs_g = Number(b.carbs)
-    }
-    if (b.name && !b.food_name) {
-      b.food_name = String(b.name)
-    }
-    if (!b.date) {
-      b.date = new Date().toISOString().split('T')[0]
-    }
-  }
-  next()
+// #1297: this file used to hold the ONLY implementation of these middlewares —
+// but as a `.ts` file it was NEVER actually loadable at runtime: `health-api.service`
+// runs `node server.js` directly (no build step; `dist/` is gitignored, nothing
+// requires it), and every route file is plain CommonJS JS. `grep requireFields|
+// validateDate|normalizeNutrition routes/` found zero hits — the middleware was
+// fully written and unit-tested here, and fully disconnected from the app.
+//
+// The canonical, runtime-loadable implementation now lives in `lib/validate.js`
+// (plain JS, `require`d directly by the route files). This module re-exports it
+// so the existing typed tests (`src/tests/supplement_catalog.test.ts` imports
+// `normalizeSupplementId` from here) keep passing unchanged — no behaviour
+// difference, just a single source of truth instead of two.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const impl = require('../../lib/validate') as {
+  requireFields: (...fields: string[]) => (req: Request, res: Response, next: NextFunction) => void
+  requireAnyField: (...fields: string[]) => (req: Request, res: Response, next: NextFunction) => void
+  validateDate: (req: Request, res: Response, next: NextFunction) => void
+  normalizeNutrition: (req: Request, res: Response, next: NextFunction) => void
+  normalizeSupplementId: (req: Request, res: Response, next: NextFunction) => void
 }
 
-/**
- * Validate required fields in request body
- */
-export function requireFields(...fields: string[]) {
-  return (req: Request, res: Response, next: NextFunction): void => {
-    const missing = fields.filter(f => req.body[f] === undefined || req.body[f] === null)
-    if (missing.length > 0) {
-      res.status(400).json({ error: `Missing required fields: ${missing.join(', ')}` })
-      return
-    }
-    next()
-  }
-}
-
-/**
- * Validate date format YYYY-MM-DD
- */
-export function validateDate(req: Request, res: Response, next: NextFunction): void {
-  const date = (req.body?.date || req.query?.date) as string | undefined
-  if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD' })
-    return
-  }
-  next()
-}
-
-/**
- * Ensure supplement_id is stored as a number, not string
- */
-export function normalizeSupplementId(req: Request, res: Response, next: NextFunction): void {
-  if (req.body?.supplement_id !== undefined) {
-    req.body.supplement_id = Number(req.body.supplement_id)
-  }
-  if (req.query?.supplement_id !== undefined) {
-    req.query.supplement_id = String(Number(req.query.supplement_id))
-  }
-  next()
-}
+export const requireFields = impl.requireFields
+export const requireAnyField = impl.requireAnyField
+export const validateDate = impl.validateDate
+export const normalizeNutrition = impl.normalizeNutrition
+export const normalizeSupplementId = impl.normalizeSupplementId

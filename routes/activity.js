@@ -1,4 +1,5 @@
 const { Router } = require('express')
+const { requireFields, validateDate } = require('../lib/validate')
 
 module.exports = function (getDB) {
   const router = Router()
@@ -36,7 +37,12 @@ module.exports = function (getDB) {
   })
 
   // POST /api/activity
-  router.post('/', async (req, res) => {
+  // #1297: requireFields('type') — `activity_log` has ZERO live documents
+  // (verified live Mongo `countDocuments()` == 0), so there is no historical
+  // shape to match and no live caller to break; `type` is the minimum a
+  // meaningful activity record needs (matches the `type` field used on the
+  // separate `/api/activity-plan` collection's entries, e.g. `type: 'gym'`).
+  router.post('/', requireFields('type'), validateDate, async (req, res) => {
     try {
       const db = getDB()
       const doc = {

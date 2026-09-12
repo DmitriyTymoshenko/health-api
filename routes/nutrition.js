@@ -1,5 +1,6 @@
 const { Router } = require('express')
 const https = require('https')
+const { requireFields, validateDate, normalizeNutrition } = require('../lib/validate')
 const {
   stableDayKcalBasis,
   resolveDeficitKcal,
@@ -268,7 +269,15 @@ module.exports = function (getDB) {
   }
 
   // POST /api/nutrition
-  router.post('/', async (req, res) => {
+  // #1297: `normalizeNutrition` runs FIRST so the `name` → `food_name` alias
+  // (still supported by the in-handler normalization below) resolves BEFORE
+  // `requireFields` checks for it — otherwise a legacy caller sending `name`
+  // would be wrongly 400'd. Confirmed live writers (Nutrition.jsx submitFood/
+  // addSuggestedFood, Today.jsx saveNutriQuick, PhotoRecognize.jsx handleLog)
+  // all send food_name/kcal/meal_type unconditionally — grepped 2026-09-12,
+  // `grep -rn "API}/nutrition\`" health-dashboard/src`. `nutrition_log` had 4
+  // documents missing food_name before this fix (#1297 audit).
+  router.post('/', normalizeNutrition, requireFields('food_name', 'kcal', 'meal_type'), validateDate, async (req, res) => {
     try {
       const db = getDB()
       const doc = req.body

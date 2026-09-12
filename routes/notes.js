@@ -1,4 +1,5 @@
 const { Router } = require('express')
+const { requireFields, validateDate } = require('../lib/validate')
 
 module.exports = function (getDB) {
   const router = Router()
@@ -25,7 +26,9 @@ module.exports = function (getDB) {
   })
 
   // POST /api/notes
-  router.post('/', async (req, res) => {
+  // #1297: requireFields('content') — both live notes docs have `content`;
+  // a note with no text is not a note.
+  router.post('/', requireFields('content'), validateDate, async (req, res) => {
     try {
       const db = getDB()
       const doc = req.body

@@ -1,4 +1,5 @@
 const { Router } = require('express')
+const { requireAnyField, validateDate } = require('../lib/validate')
 
 module.exports = function (getDB) {
   const router = Router()
@@ -32,7 +33,16 @@ module.exports = function (getDB) {
   })
 
   // POST /api/body_measurements
-  router.post('/', async (req, res) => {
+  // #1297: requireAnyField (not requireFields — no single column is
+  // mandatory) — the live caller (BodyMeasurements.jsx submit()) already
+  // guards `if (Object.keys(valuesToSave).length === 0) return`, only ever
+  // sending `date` plus at least one of these MEASUREMENTS keys. This closes
+  // the same gap server-side for any other caller.
+  router.post(
+    '/',
+    requireAnyField('weight_kg', 'chest_cm', 'waist_cm', 'hips_cm', 'bicep_cm', 'forearm_cm', 'thigh_cm', 'calf_cm'),
+    validateDate,
+    async (req, res) => {
     try {
       const db = getDB()
       const doc = req.body
