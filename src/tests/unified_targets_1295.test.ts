@@ -171,6 +171,12 @@ describe('#1295 — one date ⇒ one calorie/protein/water/weight value across e
     expect(summary.body.kcal_goal).toBe(EXPECTED_KCAL)
     expect(streaks.body.goals.calories_limit).toBe(EXPECTED_KCAL)
 
+    // deficit_kcal: Nutrition.jsx's "Дефіцит по плану" row (#1295) reads this field
+    // instead of GET /api/settings/plan?date= (a DIFFERENT, historical-snapshot
+    // quantity per lib/nutrition-targets.js's own doc comment).
+    expect(targets.body.deficit_kcal).toBe(500)
+    expect(summary.body.deficit_kcal).toBe(500)
+
     // The regression this file exists to catch: a live partial WHOOP burn (1944 kcal,
     // above the 1200 "real cycle" threshold) must NOT have moved the target off 2201.
     expect(recommendations.body.summary.whoop_calories_burned).toBe(1944) // informational, unchanged
