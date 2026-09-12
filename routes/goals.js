@@ -5,7 +5,7 @@ const { Router } = require('express')
 // fallbacks now come from the SAME resolver every other target-facing route reads, so a
 // day judged "on streak" here can never disagree with what /nutrition/summary or
 // /recommendations showed for the same day (BASE RULE).
-const { resolveDayTargets } = require('../lib/targets-resolver')
+const { resolveDayTargets, resolveWaterGoalMl } = require('../lib/targets-resolver')
 
 module.exports = function (getDB) {
   const router = Router()
@@ -73,24 +73,35 @@ module.exports = function (getDB) {
     try {
       const db = getDB()
 
-      // Load goals for thresholds
+      // Load goals for thresholds. #1295 round 2 (QA-VERDICT BLOCKED, Max/Codex
+      // 14:54, comment #7789): `calories_limit`/`water_min_ml` used to fall back
+      // to `goals.type={calories,water}.target_value` when present — a stale
+      // 2026-03-28 seed doc (water target_value=2500) silently OUTRANKED the
+      // resolver's dynamic (weight+strain) value (4350 live), the exact class of
+      // drift #1295 round 1 already fixed for `type=calories`. Fixed the same
+      // way: `calories_limit`/`water_min_ml` are now resolver-first (never read
+      // from `goals`); `protein_min` keeps its explicit-override capability
+      // (Lisa's `POST/PUT /api/goals` workflow — no bug found there, its live
+      // doc's `target_value` is already `null`). `scripts/sync-goals-canon-1295.js`
+      // nulls the water doc's `target_value` too, so a future reseed of that
+      // collection can't reintroduce this class of drift.
       const goalsData = await db.collection('goals').find({}).toArray()
-      const caloriesGoal = goalsData.find(g => g.type === 'calories')
       const proteinGoal = goalsData.find(g => g.type === 'protein')
-      const waterGoal = goalsData.find(g => g.type === 'water')
 
-      // #1295 — every fallback threshold below (used only when the `goals` collection
-      // has no matching type doc) comes from THE single day-target resolver, so this
-      // streak can never disagree with /nutrition/summary or /recommendations about
-      // what "on target" means today. An explicit `goals` collection entry still wins
-      // outright — that override layer is unchanged, only the FALLBACK source moved.
-      const today = new Date().toISOString().split('T')[0]
-      const targets = await resolveDayTargets(db, today)
+      // #1295 round 2 (Apex triage, comment #7791): `?date=` was previously
+      // ignored (`new Date().toISOString()...` = real UTC "today", always),
+      // unlike every other target-facing route. Default switched to the SAME
+      // Kyiv-day the 90-day window below already used
+      // (`toLocaleDateString('sv-SE', {timeZone:'Europe/Kiev'})`) — the two were
+      // silently on different calendars before this fix (UTC vs Kyiv), which is
+      // the same "one date, one definition" violation this ticket exists to close.
+      const requestedDate = req.query.date || new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Kiev' })
+      const targets = await resolveDayTargets(db, requestedDate)
 
       const goals = {
-        calories_limit: caloriesGoal?.target_value || targets.kcal,
+        calories_limit: targets.kcal,
         protein_min: proteinGoal?.target_value || targets.protein_g,
-        water_min_ml: waterGoal?.target_value || targets.water_ml,
+        water_min_ml: targets.water_ml,
         steps_min: 10000,
         supplements_count: 8,
       }
@@ -106,13 +117,14 @@ module.exports = function (getDB) {
       const toDate = days[0]
 
       // Fetch all data in parallel
-      const [weights, nutritionLogs, waterLogs, stepsLogs, intakeLogs, supplements] = await Promise.all([
+      const [weights, nutritionLogs, waterLogs, stepsLogs, intakeLogs, supplements, whoopCycles] = await Promise.all([
         db.collection('weight_log').find({ date: { $gte: fromDate, $lte: toDate } }).toArray(),
         db.collection('nutrition_log').find({ date: { $gte: fromDate, $lte: toDate } }).toArray(),
         db.collection('water_log').find({ date: { $gte: fromDate, $lte: toDate } }).toArray(),
         db.collection('steps').find({ date: { $gte: fromDate, $lte: toDate } }).toArray(),
         db.collection('supplement_intake').find({ date: { $gte: fromDate, $lte: toDate } }).toArray(),
         db.collection('supplement_catalog').find({ active: true }).toArray(),
+        db.collection('whoop_cycles').find({ date: { $gte: fromDate, $lte: toDate } }).toArray(),
       ])
 
       // Build lookup maps
@@ -142,6 +154,23 @@ module.exports = function (getDB) {
         if (i.taken && activeSupIds.has(i.supplement_id)) {
           intakeByDay[i.date].add(i.supplement_id)
         }
+      }
+
+      // #1295 round 2 (Apex triage): the water goal is DAY-dependent (weight +
+      // that day's WHOOP strain — same math /api/water/today and /api/targets
+      // use), so comparing all 90 streak days against ONE static threshold
+      // (`goals.water_min_ml`, resolved only for `requestedDate`) was the same
+      // one-metric-one-definition violation the rest of #1295 fixes. `weightKg`
+      // reuses `resolveDayTargets`' own resolution (the latest `weight_log`
+      // entry overall — the pre-existing, unrelated "which weight snapshot"
+      // convention this ticket does not change, per lib/targets-resolver.js).
+      const strainByDay = {}
+      for (const c of whoopCycles) {
+        strainByDay[c.date] = c.strain
+      }
+      const waterGoalByDay = {}
+      for (const d of days) {
+        waterGoalByDay[d] = resolveWaterGoalMl(targets.weight_kg, strainByDay[d])
       }
 
       // Calculate streak for each habit
@@ -186,7 +215,7 @@ module.exports = function (getDB) {
           const n = nutritionByDay[d]
           return n && n.protein >= goals.protein_min
         }),
-        water: calcStreak(d => (waterByDay[d] || 0) >= goals.water_min_ml),
+        water: calcStreak(d => (waterByDay[d] || 0) >= waterGoalByDay[d]),
         steps: calcStreak(d => (stepsMap[d] || 0) >= goals.steps_min),
         supplements: calcStreak(d => {
           const taken = intakeByDay[d]
@@ -199,7 +228,7 @@ module.exports = function (getDB) {
         return weightDates.has(d) &&
           (nutritionByDay[d]?.kcal > 0 && nutritionByDay[d]?.kcal <= goals.calories_limit) &&
           (nutritionByDay[d]?.protein >= goals.protein_min) &&
-          ((waterByDay[d] || 0) >= goals.water_min_ml) &&
+          ((waterByDay[d] || 0) >= waterGoalByDay[d]) &&
           ((stepsMap[d] || 0) >= goals.steps_min)
       })
 

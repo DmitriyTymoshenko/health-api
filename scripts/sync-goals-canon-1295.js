@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// #1295 mutation: fix the `goals` collection's 2 stale seed docs (created
+// #1295 mutation: fix the `goals` collection's stale seed docs (created
 // 2026-03-28, never updated) that were still winning outright over the new
 // unified targets resolver in GET /api/goals/streaks:
 //   - type: 'weight'   target_value 96 / deadline 2026-10-31
@@ -12,12 +12,19 @@
 //        null, which is exactly why /api/goals/streaks.protein_min already
 //        read the live resolver value with no fix needed). null is
 //        permanent — it can never drift again the way a second hardcoded
-//        snapshot would, because goals.js's fallback (`?? / ||`) always
-//        re-reads lib/targets-resolver.js's current kcal.
-// `type: 'water'` (target_value 2500) is left untouched — 2500 IS the
-// resolver's own static fallback (personal_profile.water_goal_ml), not a
-// disagreeing number; #1295 explicitly treats 2500 as "the fallback, not a
-// second value" (task description).
+//        snapshot would, because goals.js's fallback always re-reads
+//        lib/targets-resolver.js's current kcal.
+//   - type: 'water'    target_value 2500 (round-1 assumption below was WRONG —
+//     -> set target_value: null.  Round 1's comment claimed 2500 "IS the
+//        resolver's own static fallback, not a disagreeing number" — that was
+//        never verified against the live resolver. QA/Codex round 1 (#1295,
+//        comment #7789) proved it live: on 2026-09-12 the resolver's DYNAMIC
+//        (weight 94.4kg + strain) value was 4350 ml, and this doc's stale
+//        static 2500 silently outranked it in `/api/goals/streaks` — the
+//        SAME class of drift already fixed for `type=calories`. Fixed the
+//        same way + `routes/goals.js` no longer reads `type={calories,water}`
+//        at all (resolver-first, see that file), so this null is now
+//        belt-and-suspenders, not the only thing preventing the bug.
 //
 // Usage: node scripts/sync-goals-canon-1295.js --dry-run   (default; no writes)
 //        node scripts/sync-goals-canon-1295.js --apply     (real writes)
@@ -46,6 +53,7 @@ async function main() {
 
   const weightDoc = await goalsCol.findOne({ type: 'weight' })
   const caloriesDoc = await goalsCol.findOne({ type: 'calories' })
+  const waterDoc = await goalsCol.findOne({ type: 'water' })
 
   report.weight = weightDoc
     ? {
@@ -63,6 +71,14 @@ async function main() {
       }
     : { before: null, note: 'no type=calories doc found — nothing to sync' }
 
+  report.water = waterDoc
+    ? {
+        before: { target_value: waterDoc.target_value },
+        after: { target_value: null },
+        changed: waterDoc.target_value !== null,
+      }
+    : { before: null, note: 'no type=water doc found — nothing to sync' }
+
   if (APPLY) {
     if (weightDoc && report.weight.changed) {
       await goalsCol.updateOne(
@@ -73,10 +89,14 @@ async function main() {
     if (caloriesDoc && report.calories.changed) {
       await goalsCol.updateOne({ _id: caloriesDoc._id }, { $set: { target_value: null, updated_at: new Date() } })
     }
+    if (waterDoc && report.water.changed) {
+      await goalsCol.updateOne({ _id: waterDoc._id }, { $set: { target_value: null, updated_at: new Date() } })
+    }
     // Verify in the SAME run.
     report.verify = {
       weight: await goalsCol.findOne({ type: 'weight' }, { projection: { target_value: 1, deadline: 1, _id: 0 } }),
       calories: await goalsCol.findOne({ type: 'calories' }, { projection: { target_value: 1, _id: 0 } }),
+      water: await goalsCol.findOne({ type: 'water' }, { projection: { target_value: 1, _id: 0 } }),
     }
   }
 

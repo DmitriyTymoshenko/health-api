@@ -89,14 +89,22 @@ function makeArrayCollection(initialArr: Doc[]) {
   }
 }
 
-function makeGetDB(opts: { profile: Doc; weightEntries: Doc[]; whoopCycles: Doc[] }) {
+function makeGetDB(opts: {
+  profile: Doc
+  weightEntries: Doc[]
+  whoopCycles: Doc[]
+  // #1295 round 2 additions — default empty, only the new water-override /
+  // per-day-streak tests below populate these.
+  goalsDocs?: Doc[]
+  waterLog?: Doc[]
+}) {
   const collections: Record<string, ReturnType<typeof makeArrayCollection>> = {
     personal_profile: makeArrayCollection([opts.profile]),
     weight_log: makeArrayCollection(opts.weightEntries),
     whoop_cycles: makeArrayCollection(opts.whoopCycles),
     nutrition_log: makeArrayCollection([]),
-    goals: makeArrayCollection([]),
-    water_log: makeArrayCollection([]),
+    goals: makeArrayCollection(opts.goalsDocs ?? []),
+    water_log: makeArrayCollection(opts.waterLog ?? []),
     steps: makeArrayCollection([]),
     supplement_intake: makeArrayCollection([]),
     supplement_catalog: makeArrayCollection([]),
@@ -122,8 +130,9 @@ function makeApp(getDB: () => any) {
 }
 
 // Same date for every date-parameterised endpoint so all five see "today" as the
-// SAME day — /api/goals/streaks has no `?date=` param (always real "today"), so the
-// other four are pinned to real "today" too rather than an arbitrary fixed date.
+// SAME day. #1295 round 2 added `?date=` support to /api/goals/streaks too (it
+// used to always read real "today" via a bare `new Date()`) — every call below
+// now passes it explicitly like the other four routes already did.
 const TODAY = new Date().toISOString().split('T')[0]
 
 /**
@@ -159,7 +168,7 @@ describe('#1295 — one date ⇒ one calorie/protein/water/weight value across e
     const targets = await request(app).get('/api/targets').query({ date: TODAY })
     const recommendations = await request(app).get('/api/recommendations').query({ date: TODAY })
     const summary = await request(app).get('/api/nutrition/summary').query({ date: TODAY })
-    const streaks = await request(app).get('/api/goals/streaks')
+    const streaks = await request(app).get('/api/goals/streaks').query({ date: TODAY })
 
     expect(targets.status).toBe(200)
     expect(recommendations.status).toBe(200)
@@ -189,7 +198,7 @@ describe('#1295 — one date ⇒ one calorie/protein/water/weight value across e
     const targets = await request(app).get('/api/targets').query({ date: TODAY })
     const recommendations = await request(app).get('/api/recommendations').query({ date: TODAY })
     const summary = await request(app).get('/api/nutrition/summary').query({ date: TODAY })
-    const streaks = await request(app).get('/api/goals/streaks')
+    const streaks = await request(app).get('/api/goals/streaks').query({ date: TODAY })
 
     expect(targets.body.protein_g).toBe(EXPECTED_PROTEIN_G)
     expect(recommendations.body.summary.protein_target).toBe(EXPECTED_PROTEIN_G)
@@ -231,6 +240,75 @@ describe('#1295 — one date ⇒ one calorie/protein/water/weight value across e
 
     expect(targets.body.tdee_kcal).toBe(2701)
     expect(metrics.body.tdee_kcal).toBe(2701)
+  })
+
+  // #1295 round 2 (QA-VERDICT BLOCKED, comment #7789): the previous version of this
+  // suite never seeded a `goals` doc, so it could not catch that `/api/goals/streaks`
+  // let a stale `goals.type=water` doc (target_value=2500) outrank the resolver's
+  // dynamic value (4350 live). This test reproduces that exact stored-override shape.
+  it('water target: /api/goals/streaks resolves from the resolver even when `goals` still holds a stale override doc (round 2 regression)', async () => {
+    // The exact live shape QA found: a 2026-03-28 seed doc nobody updated since.
+    const staleWaterGoalDoc: Doc = { type: 'water', target_value: 2500 }
+    const app = makeApp(
+      makeGetDB({
+        profile: PROFILE,
+        weightEntries: [WEIGHT_ENTRY],
+        whoopCycles: [WHOOP_CYCLE],
+        goalsDocs: [staleWaterGoalDoc],
+      })
+    )
+
+    const streaks = await request(app).get('/api/goals/streaks').query({ date: TODAY })
+
+    expect(streaks.status).toBe(200)
+    // RED-FIRST (verified before commit): reverting routes/goals.js's water_min_ml
+    // back to `waterGoal?.target_value || targets.water_ml` makes this come back
+    // 2500 (the stale doc) instead of the resolver's 3700 — exactly the QA-round-1
+    // failure mode (live: 2500 vs resolver's 4350).
+    expect(streaks.body.goals.water_min_ml).toBe(EXPECTED_WATER_ML)
+    expect(streaks.body.goals.water_min_ml).not.toBe(2500)
+  })
+
+  // #1295 round 2 (Apex triage, comment #7791): the water goal is day-dependent
+  // (weight + that day's WHOOP strain), so comparing every day in the 90-day streak
+  // window against ONE static threshold (always resolved for "today") was the same
+  // one-metric-one-definition violation the rest of #1295 fixes.
+  it("water streak: each day compares against THAT day's own resolved water goal, not one static threshold (round 2 regression)", async () => {
+    const kyivDayOffset = (i: number) => {
+      const d = new Date()
+      d.setDate(d.getDate() - i)
+      return d.toLocaleDateString('sv-SE', { timeZone: 'Europe/Kiev' })
+    }
+    const kyivToday = kyivDayOffset(0)
+    const kyivYesterday = kyivDayOffset(1)
+
+    // High-strain today (>=14 -> x1.4 coef) needs calcWaterGoal(93.9,15) = 4350ml.
+    // Low-strain yesterday (<5 -> x1.0 coef) needs calcWaterGoal(93.9,2) = 3100ml.
+    // Logging the SAME 3200ml both days clears yesterday's lower bar but misses
+    // today's higher one. A single static threshold (round-1 behaviour, always
+    // resolved for "today" = 4350ml) would wrongly fail BOTH days.
+    const cycles: Doc[] = [
+      { date: kyivToday, calories_burned: 1944, strain: 15 },
+      { date: kyivYesterday, calories_burned: 1900, strain: 2 },
+    ]
+    const waterLog: Doc[] = [
+      { date: kyivToday, amount_ml: 3200 },
+      { date: kyivYesterday, amount_ml: 3200 },
+    ]
+    const app = makeApp(
+      makeGetDB({ profile: PROFILE, weightEntries: [WEIGHT_ENTRY], whoopCycles: cycles, waterLog })
+    )
+
+    const streaks = await request(app).get('/api/goals/streaks').query({ date: kyivToday })
+
+    expect(streaks.status).toBe(200)
+    // RED-FIRST (verified before commit): reverting the water streak/overall checks
+    // back to `(waterByDay[d] || 0) >= goals.water_min_ml` (one static threshold,
+    // resolved for kyivToday = 4350ml) makes `best` come back 0 — yesterday's
+    // 3200ml would ALSO fail against today's higher bar. `best === 1` only holds
+    // when each day is judged against its OWN day's resolved water goal.
+    expect(streaks.body.streaks.water.best).toBe(1)
+    expect(streaks.body.streaks.water.current).toBe(0) // today itself still misses its own (higher) bar
   })
 })
 
