@@ -1,14 +1,16 @@
 const { Router } = require('express')
 const {
-  resolveDayKcalTarget,
   stableDayKcalBasis,
-  satFatLimitG,
   satFatStatus,
-  resolveDeficitKcal,
   goalKcalDelta,
   resolveProteinGoalG,
   resolveWeightKg,
 } = require('../lib/nutrition-targets')
+// #1295 — THE single day-target resolver. The daily handler below used to
+// re-derive calories_target from resolveDayKcalTarget (WHOOP-burn-adjusted,
+// unstable — 1444 at noon vs 2400 at night for the SAME day). It now reads
+// the SAME stable resolveDayTargets() every other target-facing route uses.
+const { resolveDayTargets } = require('../lib/targets-resolver')
 
 // High-protein suggestions pool
 const HIGH_PROTEIN_POOL = [
@@ -237,54 +239,25 @@ module.exports = function (getDB) {
       // 1. Fetch today's nutrition
       const nutritionEntries = await db.collection('nutrition_log').find({ date }).toArray()
 
-      // 2. Fetch user profile for targets
-      let profile = await db.collection('personal_profile').findOne({ _type: 'profile' })
-      if (!profile) {
-        // Use defaults matching personal_profile.js defaults
-        profile = {
-          daily_kcal_goal: null,
-          tdee_kcal: 2429,
-          deficit_kcal: 500,
-          // #967: null, not a 150 literal — resolveProteinGoalG() treats any non-null
-          // daily_protein_goal_g as an EXPLICIT OWNER OVERRIDE that wins outright over the
-          // per-kg dynamic calc (#961/#966/#968). A hardcoded 150 here silently forced
-          // everyone through the "no profile" branch onto 150g, defeating the whole point
-          // of the dynamic calc. Matches personal_profile.js's own real-profile default.
-          daily_protein_goal_g: null,
-          primary_goal: 'weight_loss',
-        }
-      }
-
-      // Also try settings for real calorie goal
-      const settings = await db.collection('user_settings').findOne({})
-
-      // Get WHOOP calories burned for today
+      // 2. Get WHOOP calories burned for today — INFORMATIONAL ONLY (displayed as
+      // `whoop_calories_burned`/`whoop_based`). #1295: this used to also DRIVE the
+      // calorie target (resolveDayKcalTarget), which is exactly why the target
+      // swung 1444 (noon, partial burn) -> 2400 (night, full burn) on one day.
       const whoopCycle = await db.collection('whoop_cycles').findOne({ date })
       const caloriesBurned = whoopCycle?.calories_burned || null
 
-      // Deficit magnitude for the response payload (`deficit_goal`, ~line 484).
-      // resolveDeficitKcal (#968) uses `??`, not `||`: a deliberate 0 stays 0.
-      const deficitGoal = resolveDeficitKcal(profile)
+      // 3. THE single day-target resolver (#1295) — every number below comes from
+      // the SAME source /api/nutrition/summary, /api/goals/streaks, /api/water/today
+      // and /api/profile/metrics use (lib/targets-resolver.js). No local re-derivation.
+      const targets = await resolveDayTargets(db, date)
+      const deficitGoal = targets.deficit_kcal
+      const targetCalories = targets.kcal
+      const targetProtein = targets.protein_g
+      const targetCarbs = targets.carbs_g
+      const targetFat = targets.fat_g
+      const targetSatFat = targets.sat_fat_g
 
-      // Calculate targets
-      // Dynamic calorie target: burned + goal delta (if WHOOP data exists)
-      // Fall back to profile target if no WHOOP data.
-      // Shared helper — GET /api/nutrition/summary derives the SAME target (BASE RULE).
-      const targetCalories = resolveDayKcalTarget(profile, caloriesBurned)
-      // Protein: SINGLE SOURCE via resolveProteinGoalG (#961), wired here by #968.
-      // A local `daily_protein_goal_g || 150` would have started CONTRADICTING
-      // /api/nutrition/summary the moment #968 nulls the orphan 150 g override —
-      // summary would auto-calculate 157 while this endpoint fell back to the 150
-      // literal (BASE RULE: one metric, one definition).
-      const latestWeightEntry = await db.collection('weight_log').findOne({}, { sort: { date: -1 } })
-      const targetProtein = resolveProteinGoalG(profile, resolveWeightKg(profile, latestWeightEntry?.weight_kg)) || 150
-      // Macro split: 33% protein, 40% carbs, 27% fat
-      const targetCarbs = Math.round(targetCalories * 0.407 / 4)
-      const targetFat = Math.round(targetCalories * 0.266 / 9)
-      // Saturated fat is a CEILING, not a goal: ≤10% of the day's calories.
-      const targetSatFat = satFatLimitG(stableDayKcalBasis(profile))
-
-      // 3. Calculate consumed totals
+      // 4. Calculate consumed totals
       const consumed = nutritionEntries.reduce(
         (acc, entry) => {
           acc.calories += entry.kcal || entry.calories || 0

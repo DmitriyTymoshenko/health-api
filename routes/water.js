@@ -1,5 +1,12 @@
 const { Router } = require('express')
-const { checkWaterAndNotify, calcWaterGoal } = require('../notify')
+const { checkWaterAndNotify } = require('../notify')
+// #1295 — resolveWaterGoalMl is the ONE named entry point for "water goal, given a
+// weight and a strain" (thin wrapper over notify.js's calcWaterGoal, shared with
+// GET /api/targets). Deliberately NOT resolveWeightKg here: that function falls back
+// to `personal_profile.weight_goal_kg` (a TARGET weight) when weight_log is empty,
+// which would make an empty-log day compute water from the wrong quantity. This route
+// keeps its pre-#1295 "raw logged weight, or none at all" convention unchanged.
+const { resolveWaterGoalMl } = require('../lib/targets-resolver')
 
 module.exports = function (getDB) {
   const router = Router()
@@ -21,11 +28,13 @@ module.exports = function (getDB) {
     }
   })
 
-  // GET /api/water/today — includes dynamic goal from WHOOP
+  // GET /api/water/today?date=YYYY-MM-DD — includes dynamic goal from WHOOP.
+  // `date` defaults to real today, same as every other target-facing route in this
+  // API (#1295) — kept optional so this stays a drop-in replacement for existing callers.
   router.get('/today', async (req, res) => {
     try {
       const db = getDB()
-      const today = new Date().toISOString().split('T')[0]
+      const today = req.query.date || new Date().toISOString().split('T')[0]
       const data = await db.collection('water_log')
         .find({ date: today })
         .sort({ timestamp: 1 })
@@ -40,7 +49,7 @@ module.exports = function (getDB) {
       ])
       const weight = weightLog[0]?.weight_kg || null
       const strain = cycle?.strain || 0
-      const goal_ml = calcWaterGoal(weight, strain)
+      const goal_ml = resolveWaterGoalMl(weight, strain)
       const pct = goal_ml > 0 ? Math.round((total_ml / goal_ml) * 100) : 0
 
       res.json({ date: today, total_ml, goal_ml, pct, strain, entries: data })
