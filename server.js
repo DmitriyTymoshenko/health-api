@@ -321,6 +321,7 @@ app.use('/api/habits', require('./routes/habits')(getDB))
 app.use('/api/profile', require('./routes/personal_profile')(getDB))
 app.use('/api/recommendations', require('./routes/recommendations')(getDB))
 app.use('/api/training-program', require('./routes/training_program')(getDB))
+app.use('/api/targets', require('./routes/targets')(getDB)) // #1295 unified day-level targets resolver
 
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }))

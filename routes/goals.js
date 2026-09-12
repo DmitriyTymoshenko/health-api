@@ -1,5 +1,11 @@
 const { Router } = require('express')
-const { proteinGoalG, resolveWeightKg } = require('../lib/nutrition-targets')
+// #1295 — /streaks used to fall back to its OWN hardcoded thresholds (calories_limit
+// 2200, protein_min via the plain proteinGoalG() ignoring an explicit profile override,
+// water_min_ml 2500) whenever the `goals` collection had no matching type. Those
+// fallbacks now come from the SAME resolver every other target-facing route reads, so a
+// day judged "on streak" here can never disagree with what /nutrition/summary or
+// /recommendations showed for the same day (BASE RULE).
+const { resolveDayTargets } = require('../lib/targets-resolver')
 
 module.exports = function (getDB) {
   const router = Router()
@@ -73,24 +79,18 @@ module.exports = function (getDB) {
       const proteinGoal = goalsData.find(g => g.type === 'protein')
       const waterGoal = goalsData.find(g => g.type === 'water')
 
-      // Protein streak threshold (#961): fallback is now proteinGoalG() — the same
-      // auto-calc as /nutrition/summary — never the old hardcoded 180 g.
-      // An explicit `goals` collection entry (type='protein') still wins outright;
-      // that is this endpoint's OWN override layer and is separate from
-      // profile.daily_protein_goal_g (resolveProteinGoalG's override), so this uses
-      // the plain proteinGoalG(), not resolveProteinGoalG().
-      // #966: the coefficient is per goal mode now, so `profile` MUST be passed here
-      // too. Without it a `maintenance` profile would score its 90-day streak against
-      // 2.0 g/kg (196 g) while the summary screen showed that mode's real goal of
-      // 1.6 g/kg (157 g) — one day judged by two different thresholds (BASE RULE).
-      const profile = await db.collection('personal_profile').findOne({ _type: 'profile' })
-      const latestWeightEntry = await db.collection('weight_log').findOne({}, { sort: { date: -1 } })
-      const weightKg = resolveWeightKg(profile, latestWeightEntry?.weight_kg)
+      // #1295 — every fallback threshold below (used only when the `goals` collection
+      // has no matching type doc) comes from THE single day-target resolver, so this
+      // streak can never disagree with /nutrition/summary or /recommendations about
+      // what "on target" means today. An explicit `goals` collection entry still wins
+      // outright — that override layer is unchanged, only the FALLBACK source moved.
+      const today = new Date().toISOString().split('T')[0]
+      const targets = await resolveDayTargets(db, today)
 
       const goals = {
-        calories_limit: caloriesGoal?.target_value || 2200,
-        protein_min: proteinGoal?.target_value || proteinGoalG(weightKg, profile),
-        water_min_ml: waterGoal?.target_value || 2500,
+        calories_limit: caloriesGoal?.target_value || targets.kcal,
+        protein_min: proteinGoal?.target_value || targets.protein_g,
+        water_min_ml: waterGoal?.target_value || targets.water_ml,
         steps_min: 10000,
         supplements_count: 8,
       }

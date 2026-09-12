@@ -1,7 +1,6 @@
 const { Router } = require('express')
 const https = require('https')
 const {
-  resolveDayKcalTarget,
   stableDayKcalBasis,
   satFatLimitG,
   satFatStatus,
@@ -12,6 +11,10 @@ const {
   fiberGoalG,
   goalStatus,
 } = require('../lib/nutrition-targets')
+// #1295 — carbs/fat macro-split math now shares ONE definition with GET /api/targets
+// and routes/recommendations.js (deriveCarbsFatFromKcal), instead of Nutrition.jsx
+// deriving them a second time client-side from its OWN local calorie projection.
+const { deriveCarbsFatFromKcal } = require('../lib/targets-resolver')
 const { aggregateDay } = require('../lib/nutrition-aggregate')
 
 const TELEGRAM_BOT_TOKEN = '' // notifications disabled per user request
@@ -91,14 +94,15 @@ async function sendMealTelegramNotification(db, doc) {
     const whoopCycle = await db.collection('whoop_cycles').findOne({ date: today })
     const caloriesBurned = whoopCycle?.calories_burned
 
-    // Calorie target: SINGLE SOURCE via resolveDayKcalTarget (#968) — this digest used
-    // to re-derive it locally (`DEFAULT_KCAL = 1929`, `tdee - deficit`, `burned - deficit`),
-    // which carried TWO copies of the `|| 500` class defect: `profile.deficit_kcal` falsy
-    // ALSO made the `tdee_kcal && deficit_kcal` guard fail, so a maintenance profile
-    // (deficit 0) silently fell all the way back to the 1929 literal. The helper is
-    // goal-aware, so the digest now follows primary_goal like every other surface
-    // (BASE RULE: one metric = one definition = one source).
-    const kcalTarget = resolveDayKcalTarget(profile, caloriesBurned)
+    // Calorie target: SINGLE SOURCE via stableDayKcalBasis (#1295) — this digest used
+    // to re-derive it via resolveDayKcalTarget (WHOOP-burn-adjusted), which made the
+    // Telegram digest's own target float during the day exactly like /api/recommendations
+    // did before #1295 (1444 at noon -> 2400 at night for the SAME day). Every other
+    // target-facing surface (recommendations, nutrition/summary, goals/streaks,
+    // water/today, profile/metrics) now shares this SAME stable basis via
+    // lib/targets-resolver.js — this fire-and-forget digest already holds `profile` in
+    // scope, so it calls stableDayKcalBasis directly instead of the full async resolver.
+    const kcalTarget = stableDayKcalBasis(profile)
 
     const kcalPct = Math.round((totals.kcal / kcalTarget) * 100)
     const proteinPct = Math.round((totals.protein_g / proteinTarget) * 100)
@@ -226,6 +230,14 @@ module.exports = function (getDB) {
       // Basis is the STABLE profile target, never the intraday WHOOP burn.
       const profile = await db.collection('personal_profile').findOne({ _type: 'profile' })
       const kcalBasis = stableDayKcalBasis(profile)
+      // #1295 — the day's calorie TARGET and its carbs/fat split, so Nutrition.jsx
+      // (and any other consumer of this endpoint) can stop deriving its own from a
+      // local `projectedBurnedEOD - deficit` formula. Same basis as sat_fat/sugar/
+      // fiber below — one profile, one day target, everywhere.
+      summary.kcal_goal = kcalBasis
+      const { carbs_g: carbsGoalG, fat_g: fatGoalG } = deriveCarbsFatFromKcal(kcalBasis)
+      summary.carbs_goal_g = carbsGoalG
+      summary.fat_goal_g = fatGoalG
       summary.sat_fat_goal_g = satFatLimitG(kcalBasis)
       summary.sat_fat_status = satFatStatus(summary.sat_fat_g, summary.sat_fat_goal_g)
       summary.sugar_goal_g = sugarLimitG(kcalBasis)
