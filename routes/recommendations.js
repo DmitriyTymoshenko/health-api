@@ -5,6 +5,7 @@ const {
   goalKcalDelta,
   resolveProteinGoalG,
   resolveWeightKg,
+  rangeStatus,
 } = require('../lib/nutrition-targets')
 // #1295 — THE single day-target resolver. The daily handler below used to
 // re-derive calories_target from resolveDayKcalTarget (WHOOP-burn-adjusted,
@@ -479,12 +480,24 @@ module.exports = function (getDB) {
           protein_consumed: Math.round(consumed.protein),
           protein_target: Math.round(targetProtein),
           protein_remaining: Math.round(remainingProtein),
+          // #1396 — protein/fat as weight-derived ranges (owner decision 2026-09-16),
+          // siblings of the existing *_target point fields (Apex triage #1396,
+          // field-naming decision 4). protein_target/carbs_target/fat_target above
+          // stay the point values — UNCHANGED names and values.
+          protein_goal_min_g: targets.protein_min_g,
+          protein_goal_max_g: targets.protein_max_g,
+          protein_status: rangeStatus(consumed.protein, targets.protein_min_g, targets.protein_max_g),
           carbs_consumed: Math.round(consumed.carbs),
           carbs_target: targetCarbs,
           carbs_remaining: Math.round(remainingCarbs),
+          carbs_goal_min_g: targets.carbs_min_g,
+          carbs_goal_max_g: targets.carbs_max_g,
           fat_consumed: Math.round(consumed.fat),
           fat_target: targetFat,
           fat_remaining: Math.round(remainingFat),
+          fat_goal_min_g: targets.fat_min_g,
+          fat_goal_max_g: targets.fat_max_g,
+          fat_status: rangeStatus(consumed.fat, targets.fat_min_g, targets.fat_max_g),
           sat_fat_consumed: Math.round(consumed.sat_fat * 10) / 10,
           sat_fat_limit: targetSatFat,
           sat_fat_remaining: Math.round(Math.max(0, targetSatFat - consumed.sat_fat) * 10) / 10,

@@ -25,7 +25,7 @@ const {
   GOAL_MODES,
   DEFAULT_GOAL_MODE,
   GOAL_KCAL_RULES,
-  PROTEIN_G_PER_KG_BY_GOAL,
+  PROTEIN_POINT_G_PER_KG,
 } = require('../../lib/nutrition-targets')
 
 /** The live profile as measured on 2026-08-09 (GET /api/profile). */
@@ -153,11 +153,13 @@ describe('DEFECT 3 — primary_goal is actually read by the math', () => {
     expect(stableDayKcalBasis({ ...base, primary_goal: 'bodybuilding' })).toBe(1929)
   })
 
-  it('#966 — recomp is a KNOWN mode now: own protein coefficient, deliberately NO own kcal rule', () => {
+  it('#966 (protein matrix CANCELLED by #1396) — recomp is a KNOWN mode: deliberately NO own kcal rule', () => {
     expect(GOAL_MODES).toContain('recomp')
     expect(resolveGoalMode({ primary_goal: 'recomp' })).toBe('recomp')
-    // Protein: its own number, the highest of the five (owner decision, #966).
-    expect(PROTEIN_G_PER_KG_BY_GOAL.recomp).toBe(2.2)
+    // Protein: #966 once gave recomp its own coefficient (2.2); #1396 (owner decision
+    // 2026-09-16) CANCELLED that matrix — every mode, including recomp, now shares the
+    // SAME midpoint point coefficient (2.0 g/kg, see PROTEIN_G_PER_KG_RANGE).
+    expect(PROTEIN_POINT_G_PER_KG).toBe(2.0)
     // Calories: the owner's #966 decision covers PROTEIN only. recomp is absent from
     // GOAL_KCAL_RULES on purpose, so goalKcalDelta's `|| DEFAULT_GOAL_MODE` guard
     // applies and the basis is unchanged. Characterization test: it pins a deliberate

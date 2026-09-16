@@ -21,7 +21,7 @@ const {
   SAT_FAT_KCAL_SHARE,
   SUGAR_KCAL_SHARE,
   KCAL_PER_G_CARB,
-  PROTEIN_G_PER_KG_BY_GOAL,
+  PROTEIN_POINT_G_PER_KG,
   FIBER_G_PER_1000_KCAL,
 } = require('../../lib/nutrition-targets')
 
@@ -239,15 +239,16 @@ describe('historical entries without sugar_g (sugar_incomplete flag)', () => {
 // #961 — protein_goal_g + fiber_goal_g, dynamic from profile
 // ---------------------------------------------------------------------------
 
-describe('proteinGoalG — weight x the goal mode g/kg; default mode = weight_loss 2.0 (#966)', () => {
-  // #966 replaced #961's flat 1.6 with a per-mode matrix. With no profile passed,
-  // resolveGoalMode falls back to weight_loss = 2.0 g/kg, so every number here moved
-  // (98.2 kg: 157 -> 196). That is the owner's expected change, not a regression.
+describe('proteinGoalG — weight x the midpoint g/kg (2.0, #1396 — mode-independent, supersedes #966)', () => {
+  // #1396 (owner decision 2026-09-16) cancelled #966's per-mode matrix: the point is
+  // now the SAME midpoint (2.0 g/kg) for every goal mode, so proteinGoalG no longer
+  // takes a profile/mode argument at all. Numerically identical to #966's weight_loss
+  // row (both happened to be 2.0 g/kg) — no regression on the live default mode.
   it.each([
-    [98.2, 196], // live profile weight, 2026-08-09 (task #961 premise; #966: was 157)
-    [90, 180], // was 144
-    [60, 120], // was 96
-    [70.5, 141], // was 113
+    [98.2, 196], // live profile weight, 2026-08-09 (task #961 premise)
+    [90, 180],
+    [60, 120],
+    [70.5, 141],
   ])('%s kg -> %s g', (kg, expected) => {
     expect(proteinGoalG(kg)).toBe(expected)
   })
@@ -255,7 +256,7 @@ describe('proteinGoalG — weight x the goal mode g/kg; default mode = weight_lo
   it('is a function of weight, not a hardcoded constant (the whole point of #961)', () => {
     expect(proteinGoalG(98.2)).not.toBe(proteinGoalG(60))
     expect(proteinGoalG(98.2)).toBeGreaterThan(proteinGoalG(60))
-    expect(PROTEIN_G_PER_KG_BY_GOAL.weight_loss).toBe(2.0)
+    expect(PROTEIN_POINT_G_PER_KG).toBe(2.0)
   })
 
   it.each([[0], [-10], [NaN], [null], [undefined]])(
@@ -301,9 +302,8 @@ describe('resolveProteinGoalG — explicit profile override wins outright, else 
     expect(resolveProteinGoalG({ daily_protein_goal_g: 200 }, 98.2)).toBe(200)
   })
 
-  it('falls back to proteinGoalG(weightKg, profile) when the override is null (= auto-calculate)', () => {
-    // #966: a profile with no primary_goal auto-calculates at the DEFAULT mode
-    // (weight_loss, 2.0 g/kg) -> 196, where #961's flat constant gave 157.
+  it('falls back to proteinGoalG(weightKg) when the override is null (= auto-calculate)', () => {
+    // #1396: the auto-calc midpoint (2.0 g/kg) applies regardless of primary_goal.
     expect(resolveProteinGoalG({ daily_protein_goal_g: null }, 98.2)).toBe(196)
     expect(resolveProteinGoalG(null, 98.2)).toBe(196)
   })
@@ -313,11 +313,12 @@ describe('resolveProteinGoalG — explicit profile override wins outright, else 
     expect(resolveProteinGoalG({ daily_protein_goal_g: -5 }, 98.2)).toBe(196)
   })
 
-  it('#966 — the override still wins over EVERY mode, including the highest (recomp)', () => {
+  it('#1396 — the override still wins over EVERY mode (mode no longer affects the auto-calc point at all)', () => {
     // The override layer must not become mode-dependent: an explicit number the owner
-    // typed is an explicit number, whatever the mode says.
+    // typed is an explicit number, whatever the mode is. And with #966's matrix
+    // cancelled, `recomp` auto-calculates to the SAME 196 as every other mode now.
     expect(resolveProteinGoalG({ daily_protein_goal_g: 150, primary_goal: 'recomp' }, 98.2)).toBe(150)
-    expect(resolveProteinGoalG({ daily_protein_goal_g: null, primary_goal: 'recomp' }, 98.2)).toBe(216)
+    expect(resolveProteinGoalG({ daily_protein_goal_g: null, primary_goal: 'recomp' }, 98.2)).toBe(196)
   })
 })
 

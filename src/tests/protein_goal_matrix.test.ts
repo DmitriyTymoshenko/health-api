@@ -1,19 +1,16 @@
 /**
- * Unit tests for #966 — PROTEIN_G_PER_KG_BY_GOAL, the per-goal-mode protein matrix.
+ * Unit tests for #1396 — protein/fat as weight-derived RANGES with a midpoint POINT.
  *
- * Replaces #961's single `PROTEIN_G_PER_KG = 1.6`, which was right only for the one
- * mode the profile happened to be in. One test PER MODE, as required by the task.
+ * REPLACES #966's per-goal-mode protein matrix test file (same filename kept —
+ * Apex triage #1396, design decision 1: "protein_goal_matrix.test.ts is rewritten
+ * to test the range/midpoint contract, not deleted"). #966's `PROTEIN_G_PER_KG_BY_GOAL`
+ * is CANCELLED as the point source by the owner's 2026-09-16 decision: the point
+ * (goal) is now the MIDPOINT of a single evidence-band range, for EVERY goal mode —
+ * no more five different per-mode coefficients.
  *
- * SOURCE OF TRUTH for every number below: the #966 task DESCRIPTION, block
- * "✅ РІШЕННЯ ВЛАСНИКА ОТРИМАНЕ" (owner decision relayed by @lisa 2026-08-09 18:13:57).
- * It SUPERSEDES the earlier table in comment 18:08:17 (2.2 / 1.9 / 1.7 / 2.1 / 1.3) —
- * that comment literally says "це фінал, більше уточнень не буде" and is nonetheless
- * wrong about the numbers. This file asserts the CURRENT canon and, in the last block,
- * explicitly asserts that the superseded numbers are NOT in the code, so a future
- * session that reads the comments instead of the description fails loudly.
- *
- * VERIFIED RED against the pre-fix lib/nutrition-targets.js — see the #966 task comment
- * for the recorded failures (pre-fix every mode returned the flat 1.6 g/kg value).
+ * SOURCE OF THE NUMBERS — owner decision, task #1396, relayed 2026-09-16 (Дмитро → Ліза
+ * → Філ → Apex triage comment #7975): protein 1.6-2.4 g/kg, fat 0.8-1.0 g/kg, point =
+ * midpoint of each range (protein 2.0, fat 0.9) for ALL `primary_goal` values.
  *
  * The helper is plain CommonJS (routes/*.js are CommonJS and are NOT migrated to TS,
  * see CLAUDE.md) — hence require(), not import.
@@ -22,165 +19,157 @@
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const {
   proteinGoalG,
-  proteinGPerKg,
+  fatGoalG,
+  proteinGoalRangeG,
+  fatGoalRangeG,
   resolveProteinGoalG,
   resolveWeightKg,
   stableDayKcalBasis,
   satFatLimitG,
   sugarLimitG,
   fiberGoalG,
-  PROTEIN_G_PER_KG_BY_GOAL,
+  PROTEIN_G_PER_KG_RANGE,
+  FAT_G_PER_KG_RANGE,
+  PROTEIN_POINT_G_PER_KG,
+  FAT_POINT_G_PER_KG,
   GOAL_MODES,
-  DEFAULT_GOAL_MODE,
 } = require('../../lib/nutrition-targets')
 
-/** Weight quoted in the #966 decision table (grams there are computed from this). */
-const TICKET_KG = 98.2
-/** Weight actually in weight_log on 2026-08-10, measured live before implementing. */
-const LIVE_KG = 98
-
-/** The live profile, minus the goal — each test supplies its own mode. */
-const BASE_PROFILE = { tdee_kcal: 2429, deficit_kcal: 500, daily_protein_goal_g: null }
-
-const profileFor = (primary_goal: string) => ({ ...BASE_PROFILE, primary_goal })
+/** Reference weight from the #1396 ticket (live weight_log value, 16.09). */
+const TICKET_KG = 92.9
 
 // ---------------------------------------------------------------------------
-// One test per mode — the task's explicit acceptance criterion
+// The range constants themselves — owner decision, pinned so a future session
+// cannot silently drift them back toward #966's per-mode numbers.
 // ---------------------------------------------------------------------------
 
-describe('#966 — protein matrix, one mode at a time', () => {
-  it('weight_loss (cutting) = 2.0 g/kg -> 196 g — TOP of the ISSN 2.0-2.4 band, not the 2.4 extreme', () => {
-    const profile = profileFor('weight_loss')
-    expect(proteinGPerKg(profile)).toBe(2.0)
-    expect(proteinGoalG(TICKET_KG, profile)).toBe(196)
-    expect(proteinGoalG(LIVE_KG, profile)).toBe(196) // live weight rounds to the same goal
-    expect(resolveProteinGoalG(profile, LIVE_KG)).toBe(196)
+describe('#1396 — protein/fat range constants (owner decision 2026-09-16)', () => {
+  it('protein range is 1.6-2.4 g/kg; fat range is 0.8-1.0 g/kg', () => {
+    expect(PROTEIN_G_PER_KG_RANGE).toEqual({ min: 1.6, max: 2.4 })
+    expect(FAT_G_PER_KG_RANGE).toEqual({ min: 0.8, max: 1.0 })
   })
 
-  it('muscle_gain (bulk) = 1.8 g/kg -> 177 g — above Мацюпа 1.3-1.5, below the 2.2 band top', () => {
-    const profile = profileFor('muscle_gain')
-    expect(proteinGPerKg(profile)).toBe(1.8)
-    expect(proteinGoalG(TICKET_KG, profile)).toBe(177)
-    expect(resolveProteinGoalG(profile, TICKET_KG)).toBe(177)
-  })
-
-  it('maintenance = 1.6 g/kg -> 157 g — LOWER bound of 1.6-1.8 (== the old #961 constant)', () => {
-    const profile = profileFor('maintenance')
-    expect(proteinGPerKg(profile)).toBe(1.6)
-    expect(proteinGoalG(TICKET_KG, profile)).toBe(157)
-    // The one mode whose number is unchanged by #966 — worth pinning, because it is
-    // the value #961 applied to ALL modes, and a half-applied matrix would look right
-    // here while being wrong everywhere else.
-    expect(resolveProteinGoalG(profile, TICKET_KG)).toBe(157)
-  })
-
-  it('recomp = 2.2 g/kg -> 216 g — the HIGHEST of the five (hold muscle + cut fat at once)', () => {
-    const profile = profileFor('recomp')
-    expect(proteinGPerKg(profile)).toBe(2.2)
-    expect(proteinGoalG(TICKET_KG, profile)).toBe(216)
-    // recomp is NEW in the enum (#966). Before it existed, this profile normalised to
-    // weight_loss; the test asserts it now has a number of its own, strictly higher.
-    expect(proteinGPerKg(profile)).toBeGreaterThan(proteinGPerKg(profileFor('weight_loss')))
-  })
-
-  it('endurance = 1.3 g/kg -> 128 g — middle of the Koliada 04.01 band 1.2-1.4 (the only course-sourced row)', () => {
-    const profile = profileFor('endurance')
-    expect(proteinGPerKg(profile)).toBe(1.3)
-    expect(proteinGoalG(TICKET_KG, profile)).toBe(128)
-    // Lowest of the five — endurance athletes eat carbs, not protein maximums.
-    const all = GOAL_MODES.map((m: string) => PROTEIN_G_PER_KG_BY_GOAL[m])
-    expect(PROTEIN_G_PER_KG_BY_GOAL.endurance).toBe(Math.min(...all))
+  it('the point coefficient is the DERIVED midpoint, not a third hand-typed literal', () => {
+    expect(PROTEIN_POINT_G_PER_KG).toBe((PROTEIN_G_PER_KG_RANGE.min + PROTEIN_G_PER_KG_RANGE.max) / 2)
+    expect(PROTEIN_POINT_G_PER_KG).toBe(2.0)
+    expect(FAT_POINT_G_PER_KG).toBe((FAT_G_PER_KG_RANGE.min + FAT_G_PER_KG_RANGE.max) / 2)
+    expect(FAT_POINT_G_PER_KG).toBe(0.9)
   })
 })
 
 // ---------------------------------------------------------------------------
-// Structural guards — the class of bug this matrix could still have
+// Range functions — the reference numbers from the #1396 ticket acceptance text
 // ---------------------------------------------------------------------------
 
-describe('#966 — matrix integrity', () => {
-  it('covers EXACTLY the declared goal modes — no member without a coefficient, no orphan key', () => {
-    // Without this, adding a 6th mode to GOAL_MODES would silently produce
-    // `undefined` g/kg -> NaN grams on screen, or a coefficient nothing can reach.
-    expect(Object.keys(PROTEIN_G_PER_KG_BY_GOAL).sort()).toEqual([...GOAL_MODES].sort())
-    for (const mode of GOAL_MODES) {
-      expect(typeof PROTEIN_G_PER_KG_BY_GOAL[mode]).toBe('number')
-      expect(Number.isFinite(proteinGoalG(TICKET_KG, profileFor(mode)))).toBe(true)
-      expect(proteinGoalG(TICKET_KG, profileFor(mode))).toBeGreaterThan(0)
-    }
+describe('proteinGoalRangeG / fatGoalRangeG — reference point: 92.9 kg (#1396 acceptance)', () => {
+  it('protein: min 149, max 223 (round(92.9*1.6), round(92.9*2.4))', () => {
+    expect(proteinGoalRangeG(TICKET_KG)).toEqual({ min: 149, max: 223 })
   })
 
-  it('the five modes are five DISTINCT numbers except maintenance/nothing — no accidental copy-paste', () => {
-    expect(PROTEIN_G_PER_KG_BY_GOAL).toEqual({
-      weight_loss: 2.0,
-      muscle_gain: 1.8,
-      maintenance: 1.6,
-      recomp: 2.2,
-      endurance: 1.3,
-    })
-    expect(new Set(Object.values(PROTEIN_G_PER_KG_BY_GOAL)).size).toBe(5)
+  it('fat: min 74, max 93 (round(92.9*0.8), round(92.9*1.0))', () => {
+    expect(fatGoalRangeG(TICKET_KG)).toEqual({ min: 74, max: 93 })
   })
 
-  it('does NOT carry the superseded table from comment 18:08:17 (2.2/1.9/1.7/2.1/1.3)', () => {
-    // That comment says "це фінал" and is wrong; @lisa 18:13:57 replaced it. Pinned
-    // here so a session that reads comments instead of the description fails loudly
-    // instead of shipping the owner's discarded numbers.
-    expect(PROTEIN_G_PER_KG_BY_GOAL.weight_loss).not.toBe(2.2)
-    expect(PROTEIN_G_PER_KG_BY_GOAL.muscle_gain).not.toBe(1.9)
-    expect(PROTEIN_G_PER_KG_BY_GOAL.maintenance).not.toBe(1.7)
-    expect(PROTEIN_G_PER_KG_BY_GOAL.recomp).not.toBe(2.1)
+  it('point: protein 186 (round(92.9*2.0)), fat 84 (round(92.9*0.9))', () => {
+    expect(proteinGoalG(TICKET_KG)).toBe(186)
+    expect(fatGoalG(TICKET_KG)).toBe(84)
   })
 
-  it('an absent/unknown mode uses the DEFAULT mode coefficient, never undefined -> NaN', () => {
-    expect(proteinGPerKg(undefined)).toBe(PROTEIN_G_PER_KG_BY_GOAL[DEFAULT_GOAL_MODE])
-    expect(proteinGPerKg(null)).toBe(PROTEIN_G_PER_KG_BY_GOAL[DEFAULT_GOAL_MODE])
-    expect(proteinGPerKg({ primary_goal: 'bodybuilding' })).toBe(PROTEIN_G_PER_KG_BY_GOAL[DEFAULT_GOAL_MODE])
-    expect(proteinGoalG(TICKET_KG, { primary_goal: 'bodybuilding' })).toBe(196)
-  })
-
-  it('still degrades to 0 on bad weight in EVERY mode (no NaN reaches the UI)', () => {
-    for (const mode of GOAL_MODES) {
-      for (const bad of [0, -10, NaN, null, undefined]) {
-        expect(proteinGoalG(bad, profileFor(mode))).toBe(0)
-      }
-    }
-  })
-
-  it('is stable through the day in every mode (same discipline as stableDayKcalBasis)', () => {
-    for (const mode of GOAL_MODES) {
-      const values = [0, 900, 1579, 2366, 2934].map(() => proteinGoalG(TICKET_KG, profileFor(mode)))
-      expect(new Set(values).size).toBe(1)
+  it('degrades to a zero range/point on bad weight instead of NaN reaching the UI', () => {
+    for (const bad of [0, -10, NaN, null, undefined]) {
+      expect(proteinGoalRangeG(bad)).toEqual({ min: 0, max: 0 })
+      expect(fatGoalRangeG(bad)).toEqual({ min: 0, max: 0 })
+      expect(proteinGoalG(bad)).toBe(0)
+      expect(fatGoalG(bad)).toBe(0)
     }
   })
 })
 
 // ---------------------------------------------------------------------------
-// Regression — #966 must move protein and NOTHING else
+// #1396 REPLACES #966 — the point is now MODE-INDEPENDENT (the owner's whole
+// decision: cancel the per-mode matrix, use one range + midpoint for everyone)
 // ---------------------------------------------------------------------------
 
-describe('#966 REGRESSION — only the protein goal moves', () => {
-  it('sat_fat 21 / sugar 48 / fiber 27 are untouched on the live weight_loss profile', () => {
-    const basis = stableDayKcalBasis(profileFor('weight_loss'))
+describe('#1396 — the point no longer depends on goal mode (supersedes #966\'s per-mode matrix)', () => {
+  it('every goal mode resolves to the SAME protein point at the same weight', () => {
+    // #966 used to give weight_loss 2.0, muscle_gain 1.8, maintenance 1.6, recomp 2.2,
+    // endurance 1.3 — five DIFFERENT numbers. #1396 collapses all five to one midpoint.
+    const points = GOAL_MODES.map((mode: string) =>
+      resolveProteinGoalG({ daily_protein_goal_g: null, primary_goal: mode }, TICKET_KG)
+    )
+    expect(new Set(points).size).toBe(1)
+    expect(points[0]).toBe(186)
+  })
+
+  it('weight_loss is unchanged by #1396 (2.0 g/kg midpoint == its old #966 coefficient) — no regression on the live default mode', () => {
+    expect(resolveProteinGoalG({ daily_protein_goal_g: null, primary_goal: 'weight_loss' }, TICKET_KG)).toBe(186)
+  })
+
+  it('muscle_gain/maintenance/recomp/endurance now match weight_loss instead of their old #966 numbers (177/157/216/128)', () => {
+    const modes = ['muscle_gain', 'maintenance', 'recomp', 'endurance']
+    for (const mode of modes) {
+      const got = resolveProteinGoalG({ daily_protein_goal_g: null, primary_goal: mode }, TICKET_KG)
+      expect(got).toBe(186)
+      expect(got).not.toBe({ muscle_gain: 177, maintenance: 157, recomp: 216, endurance: 128 }[mode])
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Structural guards — the class of bug this range math could still have
+// ---------------------------------------------------------------------------
+
+describe('#1396 — structural guards', () => {
+  it('max is always strictly greater than min for both macros, at any positive weight', () => {
+    for (const kg of [40, 60, 92.9, 120]) {
+      const p = proteinGoalRangeG(kg)
+      const f = fatGoalRangeG(kg)
+      expect(p.max).toBeGreaterThan(p.min)
+      expect(f.max).toBeGreaterThan(f.min)
+    }
+  })
+
+  it('the point sits strictly between min and max (it is a real midpoint, not clamped to an edge)', () => {
+    const p = proteinGoalRangeG(TICKET_KG)
+    const pt = proteinGoalG(TICKET_KG)
+    expect(pt).toBeGreaterThan(p.min)
+    expect(pt).toBeLessThan(p.max)
+  })
+
+  it('is stable through the day (same discipline as stableDayKcalBasis)', () => {
+    const hours = [0, 900, 1579, 2366, 2934]
+    const values = hours.map(() => proteinGoalG(TICKET_KG))
+    expect(new Set(values).size).toBe(1)
+  })
+
+  it('is a function of weight, not a hardcoded constant', () => {
+    expect(proteinGoalG(92.9)).not.toBe(proteinGoalG(60))
+    expect(proteinGoalG(92.9)).toBeGreaterThan(proteinGoalG(60))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Regression — #1396 must move protein/fat and NOTHING else
+// ---------------------------------------------------------------------------
+
+describe('#1396 REGRESSION — sat_fat/sugar/fiber are untouched', () => {
+  it('sat_fat 21 / sugar 48 / fiber 27 are unchanged on the live weight_loss profile', () => {
+    const basis = stableDayKcalBasis({ tdee_kcal: 2429, deficit_kcal: 500, primary_goal: 'weight_loss' })
     expect(basis).toBe(1929)
     expect(satFatLimitG(basis)).toBe(21)
     expect(sugarLimitG(basis)).toBe(48)
     expect(fiberGoalG(basis)).toBe(27)
   })
 
-  it('fiber stays mode-INDEPENDENT per kcal basis — it is 14 g/1000 kcal by construction', () => {
-    // Two modes that share a kcal basis must share a fiber goal; the protein goal
-    // between the same two must differ. That is the whole shape of #966 in one test.
-    const cut = profileFor('weight_loss')
-    const rec = profileFor('recomp')
+  it('fiber stays mode-INDEPENDENT per kcal basis (unaffected by the protein/fat range change)', () => {
+    const cut = { tdee_kcal: 2429, deficit_kcal: 500, primary_goal: 'weight_loss' }
+    const rec = { tdee_kcal: 2429, deficit_kcal: 500, primary_goal: 'recomp' }
     expect(stableDayKcalBasis(cut)).toBe(stableDayKcalBasis(rec))
     expect(fiberGoalG(stableDayKcalBasis(cut))).toBe(fiberGoalG(stableDayKcalBasis(rec)))
-    expect(proteinGoalG(TICKET_KG, cut)).not.toBe(proteinGoalG(TICKET_KG, rec))
   })
 
-  it('the live 2026-08-10 profile (weight_loss, 98 kg, no override) resolves to 196 g', () => {
-    // Mirrors the live acceptance curl: weight_log 98.0 kg, daily_protein_goal_g null,
-    // goals.protein.target_value null. Was 157 before #966.
-    const weightKg = resolveWeightKg({ weight_goal_kg: 96 }, LIVE_KG)
-    expect(resolveProteinGoalG(profileFor('weight_loss'), weightKg)).toBe(196)
+  it('an explicit daily_protein_goal_g override still wins outright over the range/point (unchanged #961 behaviour)', () => {
+    expect(resolveProteinGoalG({ daily_protein_goal_g: 200 }, TICKET_KG)).toBe(200)
   })
 })
 

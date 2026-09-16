@@ -78,8 +78,9 @@ describe('GET /api/profile/metrics — goal modes must not crash the ETA', () =>
     // 98.2 - 96 = 2.2 kg -> 2.2 * 7700 / 500 = 33.88 -> 34 days
     expect(res.body.kg_to_goal).toBe(2.2)
     expect(res.body.days_to_goal).toBe(34)
-    // #966: 157 (1.6 g/kg flat) -> 196 (weight_loss = 2.0 g/kg). This is the owner's
-    // expected change, stated in the #966 acceptance criteria, not a regression.
+    // #966: 157 (1.6 g/kg flat) -> 196 (weight_loss = 2.0 g/kg midpoint). #1396
+    // (owner decision 2026-09-16) later cancelled the per-mode matrix but the
+    // midpoint stayed 2.0 g/kg, so 196 is unchanged.
     expect(res.body.protein_recommended_g).toBe(196)
   })
 
@@ -90,23 +91,17 @@ describe('GET /api/profile/metrics — goal modes must not crash the ETA', () =>
     expect(res.body.weight_kg).toBe(100) // no weight_log doc, no profile.weight_start -> literal fallback
   })
 
-  it('#966 — protein_recommended_g follows the goal mode on THIS route too, not just /nutrition/summary', async () => {
-    // The point of this route-level test: proving `profile` is actually threaded into
-    // proteinGoalG() here. A lib-only test would still pass if this call site had been
-    // left as proteinGoalG(weight) — silently pinned to weight_loss on a screen the
-    // owner reads next to the summary (BASE RULE: one quantity, one answer).
-    const expected: Record<string, number> = {
-      weight_loss: 196, // 98.2 * 2.0
-      muscle_gain: 177, // 98.2 * 1.8
-      maintenance: 157, // 98.2 * 1.6
-      recomp: 216, // 98.2 * 2.2
-      endurance: 128, // 98.2 * 1.3
-    }
-    for (const [primary_goal, grams] of Object.entries(expected)) {
+  it('#1396 (supersedes #966) — protein_recommended_g is 196 g for weight_loss/muscle_gain/maintenance/recomp/endurance alike', async () => {
+    // #966 used to thread `profile` into proteinGoalG() to vary this by mode. #1396
+    // (owner decision 2026-09-16) cancels that matrix: every mode now shares ONE
+    // midpoint coefficient (2.0 g/kg), so this route-level call — which still passes
+    // `profile` as a (now-unused) second argument — must return the SAME number for
+    // every mode instead of #966's five different ones (196/177/157/216/128).
+    for (const primary_goal of ['weight_loss', 'muscle_gain', 'maintenance', 'recomp', 'endurance']) {
       const app = makeApp({ ...LIVE_PROFILE, primary_goal })
       const res = await request(app).get('/api/profile/metrics')
       expect(res.status).toBe(200)
-      expect({ primary_goal, g: res.body.protein_recommended_g }).toEqual({ primary_goal, g: grams })
+      expect({ primary_goal, g: res.body.protein_recommended_g }).toEqual({ primary_goal, g: 196 })
     }
   })
 

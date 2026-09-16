@@ -12,11 +12,14 @@ const {
   resolveWeightKg,
   fiberGoalG,
   goalStatus,
+  rangeStatus,
 } = require('../lib/nutrition-targets')
-// #1295 — carbs/fat macro-split math now shares ONE definition with GET /api/targets
-// and routes/recommendations.js (deriveCarbsFatFromKcal), instead of Nutrition.jsx
+// #1295 — protein/fat/carbs macro math now shares ONE definition with GET /api/targets
+// and routes/recommendations.js (deriveMacroRangesG, #1396), instead of Nutrition.jsx
 // deriving them a second time client-side from its OWN local calorie projection.
-const { deriveCarbsFatFromKcal } = require('../lib/targets-resolver')
+// PURE — no DB — so this stays off the `whoop_cycles` collection (route-level test's
+// allowlist).
+const { deriveMacroRangesG } = require('../lib/targets-resolver')
 const { aggregateDay } = require('../lib/nutrition-aggregate')
 
 const TELEGRAM_BOT_TOKEN = '' // notifications disabled per user request
@@ -232,33 +235,45 @@ module.exports = function (getDB) {
       // Basis is the STABLE profile target, never the intraday WHOOP burn.
       const profile = await db.collection('personal_profile').findOne({ _type: 'profile' })
       const kcalBasis = stableDayKcalBasis(profile)
-      // #1295 — the day's calorie TARGET and its carbs/fat split, so Nutrition.jsx
-      // (and any other consumer of this endpoint) can stop deriving its own from a
-      // local `projectedBurnedEOD - deficit` formula. Same basis as sat_fat/sugar/
-      // fiber below — one profile, one day target, everywhere.
       summary.kcal_goal = kcalBasis
       summary.deficit_kcal = resolveDeficitKcal(profile)
-      const { carbs_g: carbsGoalG, fat_g: fatGoalG } = deriveCarbsFatFromKcal(kcalBasis)
-      summary.carbs_goal_g = carbsGoalG
-      summary.fat_goal_g = fatGoalG
       summary.sat_fat_goal_g = satFatLimitG(kcalBasis)
       summary.sat_fat_status = satFatStatus(summary.sat_fat_g, summary.sat_fat_goal_g)
       summary.sugar_goal_g = sugarLimitG(kcalBasis)
       summary.sugar_status = sugarStatus(summary.sugar_g, summary.sugar_goal_g)
 
-      // DAILY GOALS (#961/#966) — protein (per-goal g/kg matrix) and fiber (14 g/1000 kcal). These are
-      // targets to REACH, not ceilings to stay under, so they use goalStatus (the
-      // inverse ladder of limitStatus), never satFatStatus/sugarStatus.
-      // Math + weight resolution live in lib/nutrition-targets.js — SINGLE SOURCE,
-      // same as the ceilings above.
+      // DAILY GOALS — protein/fat as weight-derived RANGES with a midpoint POINT,
+      // carbs as the residual (#1396, owner decision 2026-09-16, supersedes #966's
+      // per-mode protein matrix). Weight resolved BEFORE this block (moved up from
+      // its old #961/#966 position) because carbs/fat/protein now all derive from
+      // the SAME weight+kcal pair via deriveMacroRangesG — SINGLE SOURCE with
+      // GET /api/targets and GET /api/recommendations. Still only
+      // `personal_profile` + `weight_log` — no new `whoop_cycles` dependency (route
+      // test's collection allowlist).
       const latestWeightEntry = await db.collection('weight_log').findOne({}, { sort: { date: -1 } })
       const weightKg = resolveWeightKg(profile, latestWeightEntry?.weight_kg)
-      summary.protein_goal_g = resolveProteinGoalG(profile, weightKg)
-      summary.protein_status = goalStatus(summary.protein_g, summary.protein_goal_g)
+      const macros = deriveMacroRangesG(kcalBasis, weightKg, profile)
+
+      summary.protein_goal_g = macros.protein_point_g
+      summary.protein_goal_min_g = macros.protein_min_g
+      summary.protein_goal_max_g = macros.protein_max_g
+      summary.protein_status = rangeStatus(summary.protein_g, macros.protein_min_g, macros.protein_max_g)
       // Flags "no weight anywhere to auto-calculate from" (empty weight_log AND no
       // profile.weight_goal_kg) — distinct from sat_fat_incomplete/sugar_incomplete,
       // which flag missing LOGGED-ENTRY fields, not a missing GOAL input.
       summary.protein_incomplete = weightKg <= 0
+
+      summary.fat_goal_g = macros.fat_point_g
+      summary.fat_goal_min_g = macros.fat_min_g
+      summary.fat_goal_max_g = macros.fat_max_g
+      summary.fat_status = rangeStatus(summary.fat_g, macros.fat_min_g, macros.fat_max_g)
+
+      summary.carbs_goal_g = macros.carbs_point_g
+      summary.carbs_goal_min_g = macros.carbs_min_g
+      summary.carbs_goal_max_g = macros.carbs_max_g
+
+      // Fiber (14 g/1000 kcal) — a target to REACH, not a ceiling, so it uses
+      // goalStatus (the inverse ladder of limitStatus), never satFatStatus/sugarStatus.
       summary.fiber_goal_g = fiberGoalG(kcalBasis)
       summary.fiber_status = goalStatus(summary.fiber_g, summary.fiber_goal_g)
 
