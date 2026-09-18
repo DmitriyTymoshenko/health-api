@@ -226,11 +226,13 @@ const RETEST_INTERVALS = {
 module.exports = function (getDB) {
   const router = Router()
 
-  // GET /api/labs — list all lab results
+  // GET /api/labs — list all lab results (feeds the dashboard "Історія" tab)
+  // #1415: excludes documents flagged excluded:true (e.g. a duplicate PDF parse
+  // with garbled values) so a known-bad document never shows up as a measurement.
   router.get('/', async (req, res) => {
     try {
       const db = getDB()
-      const data = await db.collection('lab_results').find({}).sort({ date: -1 }).toArray()
+      const data = await db.collection('lab_results').find({ excluded: { $ne: true } }).sort({ date: -1 }).toArray()
       res.json(data)
     } catch (err) {
       res.status(500).json({ error: err.message })
@@ -238,10 +240,12 @@ module.exports = function (getDB) {
   })
 
   // GET /api/labs/latest — most recent result per biomarker
+  // #1415: same excluded:true filter — a garbled duplicate document must never
+  // win the "latest value" slot for any biomarker.
   router.get('/latest', async (req, res) => {
     try {
       const db = getDB()
-      const all = await db.collection('lab_results').find({}).sort({ date: -1 }).toArray()
+      const all = await db.collection('lab_results').find({ excluded: { $ne: true } }).sort({ date: -1 }).toArray()
       const latest = {}
       for (const entry of all) {
         for (const [key, val] of Object.entries(entry.values || {})) {
@@ -264,10 +268,12 @@ module.exports = function (getDB) {
 
   // GET /api/labs/reminders — biomarkers due for retesting
   // Returns: { overdue: [...], soon: [...], upcoming: [...], never: [...] }
+  // #1415: same excluded:true filter — a garbled duplicate document must not
+  // anchor a retest-reminder date/value for any biomarker.
   router.get('/reminders', async (req, res) => {
     try {
       const db = getDB()
-      const all = await db.collection('lab_results').find({}).sort({ date: -1 }).toArray()
+      const all = await db.collection('lab_results').find({ excluded: { $ne: true } }).sort({ date: -1 }).toArray()
 
       // Build latest per biomarker
       const latest = {}
