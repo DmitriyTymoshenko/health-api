@@ -198,54 +198,6 @@ module.exports = function (getDB) {
     }
   })
 
-  // GET /api/whoop/cycles?date=YYYY-MM-DD
-  router.get('/cycles', async (req, res) => {
-    try {
-      const db = getDB()
-      const date = req.query.date || toDateStr(new Date())
-      const doc = await db.collection('whoop_cycles').findOne({ date })
-      res.json(doc || {})
-    } catch (err) {
-      res.status(500).json({ error: err.message })
-    }
-  })
-
-  // GET /api/whoop/recovery?date=YYYY-MM-DD
-  router.get('/recovery', async (req, res) => {
-    try {
-      const db = getDB()
-      const date = req.query.date || toDateStr(new Date())
-      const doc = await db.collection('whoop_recovery').findOne({ date })
-      res.json(doc || {})
-    } catch (err) {
-      res.status(500).json({ error: err.message })
-    }
-  })
-
-  // GET /api/whoop/sleep?date=YYYY-MM-DD
-  router.get('/sleep', async (req, res) => {
-    try {
-      const db = getDB()
-      const date = req.query.date || toDateStr(new Date())
-      const doc = await db.collection('whoop_sleep').findOne({ date })
-      res.json(doc || {})
-    } catch (err) {
-      res.status(500).json({ error: err.message })
-    }
-  })
-
-  // GET /api/whoop/workouts?date=YYYY-MM-DD
-  router.get('/workouts', async (req, res) => {
-    try {
-      const db = getDB()
-      const date = req.query.date || toDateStr(new Date())
-      const docs = await db.collection('whoop_workouts').find({ date }).toArray()
-      res.json(docs)
-    } catch (err) {
-      res.status(500).json({ error: err.message })
-    }
-  })
-
   // GET /api/whoop/stats/30d
   router.get('/stats/30d', async (req, res) => {
     try {
