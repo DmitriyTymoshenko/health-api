@@ -21,34 +21,6 @@ module.exports = function (getDB) {
     }
   })
 
-  // GET /api/metrics/today
-  router.get('/today', async (req, res) => {
-    try {
-      const db = getDB()
-      const today = new Date().toISOString().split('T')[0]
-      const data = await db.collection('daily_metrics').findOne({ date: today })
-      res.json(data || {})
-    } catch (err) {
-      res.status(500).json({ error: err.message })
-    }
-  })
-
-  // GET /api/metrics/range?from=YYYY-MM-DD&to=YYYY-MM-DD
-  router.get('/range', async (req, res) => {
-    try {
-      const db = getDB()
-      const { from, to } = req.query
-      if (!from || !to) return res.status(400).json({ error: 'from and to required' })
-      const data = await db.collection('daily_metrics')
-        .find({ date: { $gte: from, $lte: to } })
-        .sort({ date: 1 })
-        .toArray()
-      res.json(data)
-    } catch (err) {
-      res.status(500).json({ error: err.message })
-    }
-  })
-
   // POST /api/metrics
   // #1297: requireAnyField over the real WHOOP metric columns (live sample,
   // `daily_metrics` sorted by `_id` desc). `scripts/sync-whoop.js` writes this

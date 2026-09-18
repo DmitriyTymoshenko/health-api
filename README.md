@@ -46,9 +46,7 @@ routes/                 # 17 JS-файлів роутів (CommonJS)
   workouts.js           # Тренування + особисті рекорди
   goals.js              # Цілі + розрахунок стриків
   foods.js              # База продуктів
-  notes.js              # Нотатки
   settings.js           # Налаштування користувача
-  activity.js           # Плани активності
   activity_plan.js      # CRUD планів активності
   body_measurements.js  # Виміри тіла
 src/
@@ -162,7 +160,6 @@ src/
 | Метод | Шлях | Опис |
 |-------|------|------|
 | GET | `/api/metrics?date=YYYY-MM-DD` | Денні метрики |
-| GET | `/api/whoop/cycles` | Цикли WHOOP |
 | POST | `/api/whoop/sync` | Примусовий синк |
 
 ### Цілі та стрики

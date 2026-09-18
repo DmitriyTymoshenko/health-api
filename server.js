@@ -53,8 +53,6 @@ async function connectDB() {
   await db.collection('workouts').createIndex({ date: -1 })
   await db.collection('weight_log').createIndex({ date: -1 })
   await db.collection('goals').createIndex({ type: 1 })
-  await db.collection('notes').createIndex({ date: -1 })
-  await db.collection('notes').createIndex({ tags: 1 })
   // #1294 SECURITY: WHOOP OAuth `state` storage. Must survive a restart (Restart=always,
   // ExecStartPre kills the port on deploy) so an in-flight /authorize→/callback round trip
   // isn't invalidated by an unrelated deploy — hence Mongo, not an in-memory Map. TTL index
@@ -309,8 +307,6 @@ app.use('/api/weight', require('./routes/weight')(getDB))
 app.use('/api/steps', require('./routes/steps')(getDB))
 app.use('/api/goals', require('./routes/goals')(getDB))
 app.use('/api/foods', require('./routes/foods')(getDB))
-app.use('/api/notes', require('./routes/notes')(getDB))
-app.use('/api/activity', require('./routes/activity')(getDB))
 app.use('/api/whoop', require('./routes/whoop')(getDB))
 app.use('/api/settings', require('./routes/settings')(getDB))
 app.use('/api/activity-plan', require('./routes/activity_plan')(getDB))

@@ -33,11 +33,7 @@ const nutritionRouter = require('../../routes/nutrition')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const goalsRouter = require('../../routes/goals')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const notesRouter = require('../../routes/notes')
-// eslint-disable-next-line @typescript-eslint/no-var-requires
 const bodyMeasurementsRouter = require('../../routes/body_measurements')
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const activityRouter = require('../../routes/activity')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const metricsRouter = require('../../routes/metrics')
 
@@ -61,9 +57,7 @@ describe('#1297 — POST {} rejected with 400 before touching the database', () 
     ['/api/weight', '/api/weight', weightRouter],
     ['/api/nutrition', '/api/nutrition', nutritionRouter],
     ['/api/goals', '/api/goals', goalsRouter],
-    ['/api/notes', '/api/notes', notesRouter],
     ['/api/body_measurements', '/api/body_measurements', bodyMeasurementsRouter],
-    ['/api/activity', '/api/activity', activityRouter],
     ['/api/metrics', '/api/metrics', metricsRouter],
   ]
 
