@@ -56,13 +56,16 @@ async function checkAndNotify(db, date, newItemName, newItemKcal) {
 }
 
 // Dynamic water goal: weight * 33ml * strain coefficient
+// #1298 R4 (owner decision 18.09 ~11:55): flat "1 L per 30 kg body weight",
+// no strain multiplier. Today.jsx now shows this exact number (rounded to
+// 0.1 L) as a pure info line with the literal "1 л на 30 кг" caption, so the
+// API and the UI must resolve the SAME value — the old strain coefficient
+// made this formula diverge from that flat statement. `strain` stays a
+// parameter for call-site compatibility (checkWaterAndNotify below,
+// lib/targets-resolver.js's resolveWaterGoalMl) but no longer affects the goal.
 function calcWaterGoal(weightKg, strain) {
   if (!weightKg) return 2500
-  let coef = 1.0
-  if (strain >= 14) coef = 1.4
-  else if (strain >= 10) coef = 1.2
-  else if (strain >= 5) coef = 1.1
-  return Math.round((weightKg * 33 * coef) / 50) * 50
+  return Math.round(weightKg * 1000 / 30)
 }
 
 // Human-readable strain level label
@@ -127,8 +130,11 @@ async function checkWaterAndNotify(db, date) {
       ? `\n📊 ${whoopParts.join(' · ')}`
       : ''
 
-    // Goal explanation
-    const baseGoal = weight ? Math.round(weight * 33 / 50) * 50 : 2500
+    // #1298 R4: calcWaterGoal no longer has a strain multiplier (flat 1L/30kg),
+    // so a "ціль підвищена через strain" explanation can never fire anymore —
+    // baseGoal computed via the SAME function (strain arg ignored) instead of a
+    // second hardcoded copy of the old formula, so this is provably always ''.
+    const baseGoal = calcWaterGoal(weight, 0)
     const goalExplain = goalMl > baseGoal
       ? `\n📈 Ціль підвищена: ${baseGoal}→${goalMl}мл (strain ${strain.toFixed(1)})`
       : ''

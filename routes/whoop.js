@@ -407,15 +407,19 @@ module.exports = function (getDB) {
       const currentDailyDays = Math.max(0, daysBetweenDateStrings(thisMondayStr, yesterdayStr) + 1)
 
       // Fetch data for both weeks
-      const [cycles, recovery, sleep, workouts, nutrition, weight, water, steps] = await Promise.all([
+      // #1298 R4: water_log/steps collections dropped from this query — water
+      // tracking was removed from Today (no new water_log writes going forward)
+      // and `steps` was already the wrong/nonexistent collection (writes go to
+      // `steps_log`, see routes/steps.js) — both fed a `water_ml`/`steps` pair
+      // on the response that only WeeklyCompare.jsx read, and that UI row is
+      // gone too (owner decision 18.09).
+      const [cycles, recovery, sleep, workouts, nutrition, weight] = await Promise.all([
         db.collection('whoop_cycles').find({ date: { $gte: lastMondayStr, $lte: todayStr } }).sort({ date: 1 }).toArray(),
         db.collection('whoop_recovery').find({ date: { $gte: lastMondayStr, $lte: todayStr } }).sort({ date: 1 }).toArray(),
         db.collection('whoop_sleep').find({ date: { $gte: lastMondayStr, $lte: todayStr } }).sort({ date: 1 }).toArray(),
         db.collection('whoop_workouts').find({ date: { $gte: lastMondayStr, $lte: todayStr } }).sort({ date: 1 }).toArray(),
         db.collection('nutrition_log').find({ date: { $gte: lastMondayStr, $lte: todayStr } }).toArray(),
         db.collection('weight_log').find({ date: { $gte: lastMondayStr, $lte: todayStr } }).sort({ date: 1 }).toArray(),
-        db.collection('water_log').find({ date: { $gte: lastMondayStr, $lte: todayStr } }).toArray(),
-        db.collection('steps').find({ date: { $gte: lastMondayStr, $lte: todayStr } }).toArray(),
       ])
 
       // #1411 R3: `excludeToday` daily-metric arrays stop at yesterday (curr window is
@@ -446,8 +450,6 @@ module.exports = function (getDB) {
       const wk = splitWeek(workouts, { excludeToday: true })      // daily: workout count
       const nut = splitWeek(nutrition, { excludeToday: true })    // daily: nutrition kcal/protein
       const wgt = splitWeek(weight)
-      const wat = splitWeek(water)
-      const stp = splitWeek(steps)
 
       function avgNutritionPerDay(entries) {
         const byDay = {}
@@ -468,21 +470,8 @@ module.exports = function (getDB) {
         }
       }
 
-      function avgWaterPerDay(entries) {
-        const byDay = {}
-        entries.forEach(e => {
-          if (!byDay[e.date]) byDay[e.date] = 0
-          byDay[e.date] += e.amount_ml || 0
-        })
-        const vals = Object.values(byDay)
-        if (!vals.length) return null
-        return Math.round(vals.reduce((a, b) => a + b, 0) / vals.length)
-      }
-
       const currNut = avgNutritionPerDay(nut.curr)
       const lastNut = avgNutritionPerDay(nut.last)
-      const currWater = avgWaterPerDay(wat.curr)
-      const lastWater = avgWaterPerDay(wat.last)
       const currWeightEntry = wgt.curr.length ? wgt.curr[wgt.curr.length - 1].weight_kg : null
       const lastWeightEntry = wgt.last.length ? wgt.last[wgt.last.length - 1].weight_kg : null
 
@@ -559,16 +548,9 @@ module.exports = function (getDB) {
           previous: lastWeightEntry,
           change_kg: currWeightEntry && lastWeightEntry ? Math.round((currWeightEntry - lastWeightEntry) * 10) / 10 : null,
         },
-        water_ml: {
-          current: currWater,
-          previous: lastWater,
-          delta: delta(currWater, lastWater),
-        },
-        steps: {
-          current: avg(stp.curr, 'steps'),
-          previous: avg(stp.last, 'steps'),
-          delta: delta(avg(stp.curr, 'steps'), avg(stp.last, 'steps')),
-        },
+        // #1298 R4: water_ml/steps dropped (see the Promise.all comment above) —
+        // WeeklyCompare.jsx's "Вода"/"Кроки (сер)" rows are gone (owner decision
+        // 18.09), these were their only consumer.
         daily: {
           recovery: [...rec.last, ...rec.curr].map(r => ({ date: r.date, value: r.recovery_score })),
           hrv: [...rec.last, ...rec.curr].map(r => ({ date: r.date, value: r.hrv_rmssd ? Math.round(r.hrv_rmssd) : null })),

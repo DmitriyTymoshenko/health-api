@@ -1,12 +1,13 @@
 const { Router } = require('express')
 const { requireFields } = require('../lib/validate')
 // #1295 — /streaks used to fall back to its OWN hardcoded thresholds (calories_limit
-// 2200, protein_min via the plain proteinGoalG() ignoring an explicit profile override,
-// water_min_ml 2500) whenever the `goals` collection had no matching type. Those
-// fallbacks now come from the SAME resolver every other target-facing route reads, so a
-// day judged "on streak" here can never disagree with what /nutrition/summary or
-// /recommendations showed for the same day (BASE RULE).
-const { resolveDayTargets, resolveWaterGoalMl } = require('../lib/targets-resolver')
+// 2200, protein_min via the plain proteinGoalG() ignoring an explicit profile override)
+// whenever the `goals` collection had no matching type. Those fallbacks now come from
+// the SAME resolver every other target-facing route reads, so a day judged "on streak"
+// here can never disagree with what /nutrition/summary or /recommendations showed for
+// the same day (BASE RULE). #1298 R4 (owner decision 18.09): water/steps/supplements
+// dropped from this endpoint entirely — see the /streaks handler below.
+const { resolveDayTargets } = require('../lib/targets-resolver')
 
 module.exports = function (getDB) {
   const router = Router()
@@ -72,7 +73,7 @@ module.exports = function (getDB) {
     }
   })
 
-  // GET /api/goals/streaks — calculate streaks for all habits
+  // GET /api/goals/streaks — calculate weight/calories/protein streaks (#1298 R4)
   router.get('/streaks', async (req, res) => {
     try {
       const db = getDB()
@@ -102,12 +103,12 @@ module.exports = function (getDB) {
       const requestedDate = req.query.date || new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Kiev' })
       const targets = await resolveDayTargets(db, requestedDate)
 
+      // #1298 R4 (owner decision 18.09 ~12:00): water/steps/supplements dropped
+      // from streaks entirely — water tracking removed from Today, steps
+      // source dead since 06.04, supplements no longer per-day tracked.
       const goals = {
         calories_limit: targets.kcal,
         protein_min: proteinGoal?.target_value || targets.protein_g,
-        water_min_ml: targets.water_ml,
-        steps_min: 10000,
-        supplements_count: 8,
       }
 
       // Generate last 90 days
@@ -121,14 +122,9 @@ module.exports = function (getDB) {
       const toDate = days[0]
 
       // Fetch all data in parallel
-      const [weights, nutritionLogs, waterLogs, stepsLogs, intakeLogs, supplements, whoopCycles] = await Promise.all([
+      const [weights, nutritionLogs] = await Promise.all([
         db.collection('weight_log').find({ date: { $gte: fromDate, $lte: toDate } }).toArray(),
         db.collection('nutrition_log').find({ date: { $gte: fromDate, $lte: toDate } }).toArray(),
-        db.collection('water_log').find({ date: { $gte: fromDate, $lte: toDate } }).toArray(),
-        db.collection('steps').find({ date: { $gte: fromDate, $lte: toDate } }).toArray(),
-        db.collection('supplement_intake').find({ date: { $gte: fromDate, $lte: toDate } }).toArray(),
-        db.collection('supplement_catalog').find({ active: true }).toArray(),
-        db.collection('whoop_cycles').find({ date: { $gte: fromDate, $lte: toDate } }).toArray(),
       ])
 
       // Build lookup maps
@@ -139,42 +135,6 @@ module.exports = function (getDB) {
         if (!nutritionByDay[n.date]) nutritionByDay[n.date] = { kcal: 0, protein: 0 }
         nutritionByDay[n.date].kcal += n.kcal || 0
         nutritionByDay[n.date].protein += (n.protein_g || n.protein || 0)
-      }
-
-      const waterByDay = {}
-      for (const w of waterLogs) {
-        waterByDay[w.date] = (waterByDay[w.date] || 0) + (w.amount_ml || 0)
-      }
-
-      const stepsMap = {}
-      for (const s of stepsLogs) {
-        stepsMap[s.date] = s.steps || 0
-      }
-
-      const activeSupIds = new Set(supplements.map(s => s.id))
-      const intakeByDay = {}
-      for (const i of intakeLogs) {
-        if (!intakeByDay[i.date]) intakeByDay[i.date] = new Set()
-        if (i.taken && activeSupIds.has(i.supplement_id)) {
-          intakeByDay[i.date].add(i.supplement_id)
-        }
-      }
-
-      // #1295 round 2 (Apex triage): the water goal is DAY-dependent (weight +
-      // that day's WHOOP strain — same math /api/water/today and /api/targets
-      // use), so comparing all 90 streak days against ONE static threshold
-      // (`goals.water_min_ml`, resolved only for `requestedDate`) was the same
-      // one-metric-one-definition violation the rest of #1295 fixes. `weightKg`
-      // reuses `resolveDayTargets`' own resolution (the latest `weight_log`
-      // entry overall — the pre-existing, unrelated "which weight snapshot"
-      // convention this ticket does not change, per lib/targets-resolver.js).
-      const strainByDay = {}
-      for (const c of whoopCycles) {
-        strainByDay[c.date] = c.strain
-      }
-      const waterGoalByDay = {}
-      for (const d of days) {
-        waterGoalByDay[d] = resolveWaterGoalMl(targets.weight_kg, strainByDay[d])
       }
 
       // Calculate streak for each habit
@@ -219,21 +179,19 @@ module.exports = function (getDB) {
           const n = nutritionByDay[d]
           return n && n.protein >= goals.protein_min
         }),
-        water: calcStreak(d => (waterByDay[d] || 0) >= waterGoalByDay[d]),
-        steps: calcStreak(d => (stepsMap[d] || 0) >= goals.steps_min),
-        supplements: calcStreak(d => {
-          const taken = intakeByDay[d]
-          return taken && taken.size >= activeSupIds.size && activeSupIds.size > 0
-        }),
       }
 
-      // Overall streak: all habits met on that day
+      // Overall streak: all THREE live metrics met on that day (#1298 R4 —
+      // water/steps dropped: the old check required `waterByDay[d] >=
+      // waterGoalByDay[d]` and `stepsMap[d] >= goals.steps_min`, both
+      // permanently unsatisfiable once water tracking left Today and `steps`
+      // (an already-nonexistent collection — writes go to `steps_log`, see
+      // routes/steps.js) never got any rows, which made `overall` structurally
+      // unreachable regardless of real behaviour — see #1298 Codex audit).
       const overall = calcStreak(d => {
         return weightDates.has(d) &&
           (nutritionByDay[d]?.kcal > 0 && nutritionByDay[d]?.kcal <= goals.calories_limit) &&
-          (nutritionByDay[d]?.protein >= goals.protein_min) &&
-          ((waterByDay[d] || 0) >= waterGoalByDay[d]) &&
-          ((stepsMap[d] || 0) >= goals.steps_min)
+          (nutritionByDay[d]?.protein >= goals.protein_min)
       })
 
       res.json({ streaks, overall, goals })

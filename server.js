@@ -317,7 +317,9 @@ app.use('/api/activity-plan', require('./routes/activity_plan')(getDB))
 app.use('/api/body_measurements', require('./routes/body_measurements')(getDB))
 app.use('/api/meal-templates', require('./routes/meal_templates')(getDB))
 app.use('/api/nutrition/recognize', require('./routes/nutrition_recognize')(getDB))
-app.use('/api/habits', require('./routes/habits')(getDB))
+// #1298 R4 (owner decision 18.09): the "Звички" route + its handler file were
+// removed — no backing Mongo collections ever existed, and the matching
+// dashboard tab is gone too.
 app.use('/api/profile', require('./routes/personal_profile')(getDB))
 app.use('/api/recommendations', require('./routes/recommendations')(getDB))
 app.use('/api/training-program', require('./routes/training_program')(getDB))

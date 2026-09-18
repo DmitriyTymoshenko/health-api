@@ -1,39 +1,31 @@
 const { calcWaterGoal, strainLabel, expectedPctByHour } = require('../../notify')
 
+// #1298 R4 (owner decision 18.09 ~11:55): calcWaterGoal is now a flat "1 L per
+// 30 kg body weight", no strain multiplier — Today.jsx shows this exact
+// number with the literal "1 л на 30 кг" caption, so the formula can no
+// longer diverge from that statement for any strain value.
 describe('calcWaterGoal', () => {
   it('returns 2500 when weight is null', () => {
     expect(calcWaterGoal(null, 0)).toBe(2500)
     expect(calcWaterGoal(undefined, 10)).toBe(2500)
   })
 
-  it('calculates base goal from weight (no strain)', () => {
-    // 80kg * 33 = 2640, rounded to 2650
-    expect(calcWaterGoal(80, 0)).toBe(2650)
-    // 70kg * 33 = 2310, rounded to 2300
-    expect(calcWaterGoal(70, 0)).toBe(2300)
+  it('calculates goal from weight alone: weightKg * 1000 / 30, rounded to the nearest ml', () => {
+    // 80kg * 1000 / 30 = 2666.67 -> 2667
+    expect(calcWaterGoal(80, 0)).toBe(2667)
+    // 70kg * 1000 / 30 = 2333.33 -> 2333
+    expect(calcWaterGoal(70, 0)).toBe(2333)
+    // 92.9kg (audit #1298 example weight) * 1000 / 30 = 3096.67 -> 3097 ("≈3.1л" on Today)
+    expect(calcWaterGoal(92.9, 0)).toBe(3097)
+    // 93.9kg (unified_targets_1295 fixture weight) -> exact multiple of 30, no rounding
+    expect(calcWaterGoal(93.9, 0)).toBe(3130)
   })
 
-  it('applies 1.1x coefficient for strain 5-9', () => {
-    // 80kg * 33 * 1.1 = 2904, round to 2900
-    expect(calcWaterGoal(80, 5)).toBe(2900)
-    expect(calcWaterGoal(80, 9)).toBe(2900)
-  })
-
-  it('applies 1.2x coefficient for strain 10-13', () => {
-    // 80kg * 33 * 1.2 = 3168, round to 3150
-    expect(calcWaterGoal(80, 10)).toBe(3150)
-    expect(calcWaterGoal(80, 13)).toBe(3150)
-  })
-
-  it('applies 1.4x coefficient for strain 14+', () => {
-    // 80kg * 33 * 1.4 = 3696, round to 3700
-    expect(calcWaterGoal(80, 14)).toBe(3700)
-    expect(calcWaterGoal(80, 20)).toBe(3700)
-  })
-
-  it('rounds to nearest 50ml', () => {
-    // 65kg * 33 = 2145, round to 2150
-    expect(calcWaterGoal(65, 0)).toBe(2150)
+  it('strain no longer affects the goal — same weight, any strain, same result', () => {
+    expect(calcWaterGoal(80, 5)).toBe(2667)
+    expect(calcWaterGoal(80, 10)).toBe(2667)
+    expect(calcWaterGoal(80, 14)).toBe(2667)
+    expect(calcWaterGoal(80, 20)).toBe(2667)
   })
 })
 
