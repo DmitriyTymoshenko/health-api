@@ -1,6 +1,8 @@
 const { Router } = require('express')
-const { hasPositiveWeight } = require('../lib/workout-sets')
+const { calc1RM, pickBestSet } = require('../lib/workout-sets')
 const { evaluateProgression } = require('../lib/exercise-progression')
+const { buildExerciseTrends } = require('../lib/exercise-trends')
+const { formatDateKyiv } = require('../lib/training-program')
 const { parseWorkoutLogText } = require('../lib/workout-log-parser')
 const {
   buildExerciseFromParsed,
@@ -52,35 +54,9 @@ const DEFAULT_EXERCISES = [
   { name: 'Підйом ніг', muscle_group: 'core', equipment: 'bodyweight' },
 ]
 
-function calc1RM(weight, reps) {
-  if (!weight || !reps) return 0
-  return Math.round(weight * (1 + reps / 30) * 10) / 10
-}
-
-// #1130: pick the "best" set of a session for ranking/history purposes.
-// Bodyweight exercises (pull-ups, dips, planks…) log sets with no `weight_kg`, so
-// calc1RM() always returns 0 for every set and the old orm-based reduce could never
-// pick a winner — max_weight/best_reps/est_1rm silently stayed 0 forever.
-// Bodyweight detection rule (documented, not implicit): a session is bodyweight when
-// NONE of its logged sets carry a positive `weight_kg` — this reads straight off the
-// `workouts` data actually being ranked (no extra `exercises_library.equipment` lookup
-// needed) and degrades correctly if a bodyweight exercise is later logged WITH added
-// weight (weighted pull-ups): it then ranks by 1RM again, same as any weighted lift.
-function pickBestSet(sets) {
-  const hasWeight = hasPositiveWeight(sets)
-  if (hasWeight) {
-    // Weighted exercise — unchanged behavior: rank by estimated 1RM.
-    return sets.reduce((best, s) => {
-      const orm = calc1RM(s.weight_kg, s.reps)
-      return orm > best.orm ? { orm, weight: s.weight_kg || 0, reps: s.reps || 0 } : best
-    }, { orm: 0, weight: 0, reps: 0 })
-  }
-  // Bodyweight exercise — rank by reps instead of a 1RM that can never be nonzero.
-  return sets.reduce((best, s) => {
-    const reps = s.reps || 0
-    return reps > best.reps ? { orm: 0, weight: 0, reps } : best
-  }, { orm: 0, weight: 0, reps: 0 })
-}
+// calc1RM/pickBestSet moved to lib/workout-sets.js (#1417) so this route,
+// lib/exercise-trends.js, and any future consumer share ONE ranking function —
+// see lib/workout-sets.js for the #1130 bodyweight-detection rationale.
 
 module.exports = function (getDB) {
   const router = Router()
@@ -457,6 +433,47 @@ module.exports = function (getDB) {
       }
 
       const result = evaluateProgression({ exerciseName: name, equipment, weightUnit, sessions, targetRepsRaw })
+      res.json(result)
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // GET /api/workouts/exercise-trends?window=N — #1417: overview of ALL exercises,
+  // last-vs-previous-session status (up/flat/down) so the owner can see "де я
+  // прогресую, а де просідаю" without opening every exercise one at a time.
+  // `window` = last N SESSIONS per exercise to consider (integer >= 2), default = all
+  // logged sessions. ONE `find({})` over `workouts` (projection date+exercises only,
+  // per Apex triage — no per-exercise query, no `.limit(30)` copy from /progress which
+  // is a PER-EXERCISE cap, not a global one). Pure grouping/classification logic lives
+  // in lib/exercise-trends.js (unit-testable without a DB, same pattern as
+  // lib/exercise-progression.js). Exercise-name grouping reuses exerciseKey() from
+  // lib/volume-by-muscle.js — there is NO alias layer for exercise names (#1408 added
+  // muscle-group clarification, not name aliasing; verified live, Apex triage).
+  router.get('/exercise-trends', async (req, res) => {
+    try {
+      const db = getDB()
+      let window
+      if (req.query.window !== undefined) {
+        window = Number(req.query.window)
+        if (!Number.isInteger(window) || window < 2) {
+          return res.status(400).json({ error: 'window must be an integer >= 2' })
+        }
+      }
+
+      const workouts = await db.collection('workouts')
+        .find({}, { projection: { date: 1, exercises: 1 } })
+        .sort({ date: 1 })
+        .toArray()
+
+      const exerciseNames = exerciseNamesFromWorkouts(workouts)
+      const library = exerciseNames.length > 0
+        ? await db.collection('exercises_library').find({ name: { $in: exerciseNames } }).toArray()
+        : []
+      const libraryByName = new Map(library.map(ex => [String(ex.name || '').toLowerCase(), ex]))
+
+      const todayStr = formatDateKyiv(new Date())
+      const result = buildExerciseTrends({ workouts, libraryByName, window, todayStr })
       res.json(result)
     } catch (err) {
       res.status(500).json({ error: err.message })
