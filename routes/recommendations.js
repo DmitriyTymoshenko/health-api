@@ -553,25 +553,28 @@ module.exports = function (getDB) {
       const latestWeightEntry7d = await db.collection('weight_log').findOne({}, { sort: { date: -1 } })
       const targetProtein = resolveProteinGoalG(profile, resolveWeightKg(profile, latestWeightEntry7d?.weight_kg)) || 150
 
-      // Build list of last 7 days (today inclusive)
+      // #1411 R3: build the last 7 FULL days, ending YESTERDAY — a still-running today is
+      // a partial day (breakfast logged, dinner not yet) that would drag avg_calories/
+      // avg_protein down and fire false "day of undereating"/"protein deficit" patterns
+      // (measured in audit #1409 §2.5). Same invariant as routes/whoop.js `/weekly-compare`.
       const todayDate = new Date()
       const days = []
-      for (let i = 6; i >= 0; i--) {
+      for (let i = 7; i >= 1; i--) {
         const d = new Date(todayDate)
         d.setDate(d.getDate() - i)
         days.push(d.toISOString().split('T')[0])
       }
       const startDate = days[0]
-      const today = days[days.length - 1]
+      const endDate = days[days.length - 1] // yesterday — last day IN the window
 
-      // Fetch all nutrition entries for last 7 days
+      // Fetch all nutrition entries for the 7-day window (today excluded)
       const allEntries = await db.collection('nutrition_log')
         .find({ date: { $in: days } })
         .toArray()
 
-      // Fetch WHOOP cycles for last 7 days
+      // Fetch WHOOP cycles for the same 7-day window
       const whoopCycles = await db.collection('whoop_cycles')
-        .find({ date: { $gte: startDate, $lte: today } })
+        .find({ date: { $gte: startDate, $lte: endDate } })
         .toArray()
 
       const whoopByDate = {}
@@ -758,6 +761,12 @@ module.exports = function (getDB) {
           total_deficit_days: daysWithData.filter(d => d.surplus_deficit <= 0).length,
           days_with_data: daysWithData.length,
           whoop_based: hasWhoopData,
+          // #1411 R3: this window is Mon..yesterday-style trailing 7 FULL days — today is
+          // never in `days`/`daysArray` below, so these averages can't be dragged down by
+          // an in-progress partial day. `window_days` names the field-name collision reason:
+          // `days` (below, array-typed) already means the per-day chart rows.
+          includes_today: false,
+          window_days: daysArray.length,
         },
         patterns,
         weekly_strategy: weeklyStrategy,

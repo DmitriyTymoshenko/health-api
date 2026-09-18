@@ -1,4 +1,5 @@
 const { Router } = require('express')
+const { daysBetweenDateStrings } = require('../lib/training-program')
 
 // #1294 SECURITY: XSS — every `res.send(\`<h2>...${userInput}</h2>\`)` sink in this file
 // interpolated request-controlled data (query params, upstream error bodies) straight into
@@ -392,6 +393,19 @@ module.exports = function (getDB) {
       const lastMondayStr = fmt(lastMonday)
       const lastSundayStr = fmt(lastSunday)
 
+      // #1411 R3: "yesterday" (Kyiv) is the last FULL day — the boundary DAILY metrics
+      // (strain/calories/nutrition/workouts) use for the current period, so a still-running
+      // today never dilutes the average with a partial day. Night metrics (recovery/sleep)
+      // are unaffected — tonight's sleep is already complete by the time this runs.
+      const yesterdayDate = new Date(todayDate)
+      yesterdayDate.setDate(todayDate.getDate() - 1)
+      const yesterdayStr = fmt(yesterdayDate)
+      // Days actually covered by the daily-metric current window (Mon..yesterday). On the
+      // Monday before the first night's data lands, yesterdayStr < thisMondayStr and this
+      // is clamped to 0 — the window (and every daily metric derived from it) is empty,
+      // never negative.
+      const currentDailyDays = Math.max(0, daysBetweenDateStrings(thisMondayStr, yesterdayStr) + 1)
+
       // Fetch data for both weeks
       const [cycles, recovery, sleep, workouts, nutrition, weight, water, steps] = await Promise.all([
         db.collection('whoop_cycles').find({ date: { $gte: lastMondayStr, $lte: todayStr } }).sort({ date: 1 }).toArray(),
@@ -404,9 +418,14 @@ module.exports = function (getDB) {
         db.collection('steps').find({ date: { $gte: lastMondayStr, $lte: todayStr } }).toArray(),
       ])
 
-      function splitWeek(arr) {
+      // #1411 R3: `excludeToday` daily-metric arrays stop at yesterday (curr window is
+      // thisMonday..yesterday) so a partial in-progress today never lands in the average.
+      // Night metrics (recovery/sleep) keep the original thisMonday..today range — tonight's
+      // sleep is already a finished record when this endpoint runs.
+      function splitWeek(arr, { excludeToday = false } = {}) {
         const last = arr.filter(d => d.date >= lastMondayStr && d.date <= lastSundayStr)
-        const curr = arr.filter(d => d.date >= thisMondayStr && d.date <= todayStr)
+        const currEnd = excludeToday ? yesterdayStr : todayStr
+        const curr = arr.filter(d => d.date >= thisMondayStr && d.date <= currEnd)
         return { last, curr }
       }
 
@@ -421,11 +440,11 @@ module.exports = function (getDB) {
         return Math.round((curr - prev) / Math.abs(prev) * 1000) / 10
       }
 
-      const rec = splitWeek(recovery)
-      const slp = splitWeek(sleep)
-      const cyc = splitWeek(cycles)
-      const wk = splitWeek(workouts)
-      const nut = splitWeek(nutrition)
+      const rec = splitWeek(recovery)                            // night — today included (already complete)
+      const slp = splitWeek(sleep)                                // night — today included (already complete)
+      const cyc = splitWeek(cycles, { excludeToday: true })       // daily: strain/calories_burned
+      const wk = splitWeek(workouts, { excludeToday: true })      // daily: workout count
+      const nut = splitWeek(nutrition, { excludeToday: true })    // daily: nutrition kcal/protein
       const wgt = splitWeek(weight)
       const wat = splitWeek(water)
       const stp = splitWeek(steps)
@@ -469,7 +488,17 @@ module.exports = function (getDB) {
 
       const result = {
         periods: {
-          current: { from: thisMondayStr, to: todayStr, days_count: cyc.curr.length || rec.curr.length || 0 },
+          current: {
+            from: thisMondayStr,
+            to: todayStr,
+            days_count: cyc.curr.length || rec.curr.length || 0,
+            // #1411 R3: daily metrics (strain/calories/nutrition/workouts) NEVER include
+            // today — `days` is the actual number of complete days behind those averages
+            // (Mon..yesterday), independent of `days_count` above (which still reflects
+            // recovery/cycle presence and can include today via the rec.curr fallback).
+            includes_today: false,
+            days: currentDailyDays,
+          },
           previous: { from: lastMondayStr, to: lastSundayStr, days_count: 7 },
         },
         recovery: {
