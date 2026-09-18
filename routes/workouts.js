@@ -10,6 +10,11 @@ const {
   backfillWeightUnitInSession,
 } = require('../lib/workout-log-write')
 const { MUSCLE_GROUPS } = require('../lib/exercise-dictionaries')
+const {
+  periodBounds,
+  summarizeVolumeByMuscle,
+  exerciseNamesFromWorkouts,
+} = require('../lib/volume-by-muscle')
 
 const DEFAULT_EXERCISES = [
   // Груди
@@ -109,6 +114,48 @@ module.exports = function (getDB) {
         .limit(Number(limit))
         .toArray()
       res.json(data)
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // GET /api/workouts/volume-by-muscle?period=week|month&date=YYYY-MM-DD
+  router.get('/volume-by-muscle', async (req, res) => {
+    try {
+      const db = getDB()
+      const period = req.query.period || 'week'
+      const bounds = periodBounds(period, req.query.date)
+      if (bounds.error) return res.status(400).json({ error: bounds.error })
+
+      const workoutsCol = db.collection('workouts')
+      const [currentWorkouts, prevWorkouts] = await Promise.all([
+        workoutsCol.find({ date: { $gte: bounds.from, $lte: bounds.to } }).sort({ date: 1 }).toArray(),
+        workoutsCol.find({ date: { $gte: bounds.prevFrom, $lte: bounds.prevTo } }).sort({ date: 1 }).toArray(),
+      ])
+
+      const exerciseNames = [...new Set([
+        ...exerciseNamesFromWorkouts(currentWorkouts),
+        ...exerciseNamesFromWorkouts(prevWorkouts),
+      ])]
+      const library = exerciseNames.length > 0
+        ? await db.collection('exercises_library').find({ name: { $in: exerciseNames } }).toArray()
+        : []
+      const libraryByName = new Map(library.map(ex => [String(ex.name || '').toLowerCase(), ex]))
+
+      const current = summarizeVolumeByMuscle(currentWorkouts, libraryByName, MUSCLE_GROUPS)
+      const prev = summarizeVolumeByMuscle(prevWorkouts, libraryByName, MUSCLE_GROUPS)
+
+      res.json({
+        period: bounds.period,
+        from: bounds.from,
+        to: bounds.to,
+        ...current,
+        prev: {
+          from: bounds.prevFrom,
+          to: bounds.prevTo,
+          ...prev,
+        },
+      })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
