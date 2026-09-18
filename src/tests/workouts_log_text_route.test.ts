@@ -30,6 +30,12 @@ function makeApp(opts: {
             const re = filter.name.$regex
             return exercises.find(e => re.test(e.name as string)) || null
           },
+          find: (filter: any) => ({
+            toArray: async () => {
+              const names: string[] = filter.name.$in
+              return exercises.filter(e => names.includes(e.name as string))
+            },
+          }),
           insertOne: async (doc: any) => {
             const _id = `lib_${exercises.length + 1}`
             exercises.push({ ...doc, _id })
@@ -202,6 +208,67 @@ describe('POST /api/workouts/log-text', () => {
     expect(res.status).toBe(201)
     expect(res.body.exercises).toHaveLength(1)
     expect(res.body.skipped).toEqual([{ line: 'сміття без двокрапки', reason: 'no_colon' }])
+  })
+
+  // #1408 — needs_muscle_group_clarification (mirrors needs_unit_clarification above)
+  it('#1408: an UNKNOWN exercise is auto-created with muscle_group:null and flagged in needs_muscle_group_clarification (never a silent guess)', async () => {
+    const { app, exercises } = makeApp({ exercises: [] })
+    const res = await request(app).post('/api/workouts/log-text').send({ date: '2026-09-18', text: 'Тяга блока широким хватом: 8х52' })
+    expect(res.status).toBe(201)
+    expect(exercises[0]).toMatchObject({ name: 'Тяга блока широким хватом', muscle_group: null })
+    expect(res.body.needs_muscle_group_clarification).toEqual(['Тяга блока широким хватом'])
+  })
+
+  it('#1408: a KNOWN exercise with a resolved muscle_group is NOT flagged', async () => {
+    const { app } = makeApp({ exercises: [{ _id: 'lib_1', name: 'Присідання', muscle_group: 'legs', weight_unit: 'kg' }] })
+    const res = await request(app).post('/api/workouts/log-text').send({ date: '2026-09-18', text: 'Присідання: 8х80' })
+    expect(res.status).toBe(201)
+    expect(res.body.needs_muscle_group_clarification).toEqual([])
+  })
+
+  it('#1408: a mixed session (one resolved, one not) flags only the unresolved exercise', async () => {
+    const { app } = makeApp({
+      exercises: [
+        { _id: 'lib_1', name: 'Присідання', muscle_group: 'legs', weight_unit: 'kg' },
+        { _id: 'lib_2', name: 'Тест2', muscle_group: null, weight_unit: null },
+      ],
+    })
+    const res = await request(app).post('/api/workouts/log-text').send({
+      date: '2026-09-18',
+      text: 'Присідання: 8х80\nТест2: 6х20',
+    })
+    expect(res.body.needs_muscle_group_clarification).toEqual(['Тест2'])
+  })
+
+  it('#1408: merge branch recomputes from the FULL merged array — an exercise logged in an EARLIER request (not present in THIS text) still counts if unresolved', async () => {
+    const { app, workouts } = makeApp({
+      exercises: [
+        { _id: 'lib_1', name: 'Тест2', muscle_group: null, weight_unit: null },
+        { _id: 'lib_2', name: 'Присідання', muscle_group: 'legs', weight_unit: 'kg' },
+      ],
+    })
+    const res1 = await request(app).post('/api/workouts/log-text').send({ date: '2026-09-18', text: 'Тест2: 6х20' })
+    expect(res1.body.needs_muscle_group_clarification).toEqual(['Тест2'])
+
+    // second POST on the same date logs a DIFFERENT exercise — 'Тест2' isn't in this
+    // text at all, but it's still in the merged session and still unresolved
+    const res2 = await request(app).post('/api/workouts/log-text').send({ date: '2026-09-18', text: 'Присідання: 8х80' })
+    expect(res2.status).toBe(200)
+    expect(res2.body.exercises.map((e: any) => e.name)).toEqual(['Тест2', 'Присідання'])
+    expect(res2.body.needs_muscle_group_clarification).toEqual(['Тест2'])
+    expect(workouts[0].needs_muscle_group_clarification).toEqual(['Тест2'])
+  })
+
+  it('#1408: needs_muscle_group_clarification clears once the library entry gets a group and the exercise is re-merged (PATCH .../muscle-group will drive this)', async () => {
+    const { app, exercises } = makeApp({ exercises: [{ _id: 'lib_1', name: 'Тест2', muscle_group: null, weight_unit: null }] })
+    const res1 = await request(app).post('/api/workouts/log-text').send({ date: '2026-09-18', text: 'Тест2: 6х20' })
+    expect(res1.body.needs_muscle_group_clarification).toEqual(['Тест2'])
+
+    // simulate the PATCH resolving the group — this route itself never writes muscle_group
+    exercises[0].muscle_group = 'other'
+
+    const res2 = await request(app).post('/api/workouts/log-text').send({ date: '2026-09-18', text: 'Тест2: 6х20' })
+    expect(res2.body.needs_muscle_group_clarification).toEqual([])
   })
 })
 

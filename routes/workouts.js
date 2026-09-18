@@ -6,8 +6,10 @@ const {
   buildExerciseFromParsed,
   mergeExercisesIntoDoc,
   exercisesNeedingUnit,
+  exercisesNeedingMuscleGroup,
   backfillWeightUnitInSession,
 } = require('../lib/workout-log-write')
+const { MUSCLE_GROUPS } = require('../lib/exercise-dictionaries')
 
 const DEFAULT_EXERCISES = [
   // Груди
@@ -230,6 +232,57 @@ module.exports = function (getDB) {
       }
 
       res.json({ exercise, backfilled_sessions: backfilledSessions, backfilled_sets: backfilledSets })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // PATCH /api/workouts/exercises/:name/muscle-group — #1408: the ONE write path for
+  // exercises_library.muscle_group. Mirrors /weight-unit above (enum validation, 404 on
+  // unknown name, post-write walk over `workouts`) — the generic content-PATCH at :158
+  // deliberately excludes muscle_group from its whitelist, same reason /weight-unit is
+  // its own route: this one has a real side effect on session docs, the content one
+  // never does. `'other'` is a valid, explicit answer (an owner-confirmed "інше" is a
+  // resolved state, not the same as a silent null) and clears the clarification array
+  // exactly like any other valid value.
+  //
+  // Recomputing `needs_muscle_group_clarification` here does NOT need to re-derive the
+  // WHOLE array from exercises_library — only THIS exercise's resolution state changed
+  // (every other exercise in the session is untouched by this PATCH), so a plain filter
+  // of `name` out of the existing array is both correct and avoids N extra library
+  // lookups per session.
+  router.patch('/exercises/:name/muscle-group', async (req, res) => {
+    try {
+      const db = getDB()
+      const name = req.params.name
+      const { muscle_group } = req.body
+      if (!MUSCLE_GROUPS.includes(muscle_group)) {
+        return res.status(400).json({ error: `muscle_group must be one of: ${MUSCLE_GROUPS.join(', ')}` })
+      }
+
+      const libCol = db.collection('exercises_library')
+      const libResult = await libCol.updateOne({ name }, { $set: { muscle_group, updated_at: new Date() } })
+      if (libResult.matchedCount === 0) {
+        return res.status(404).json({ error: 'Exercise not found', name })
+      }
+      const exercise = await libCol.findOne({ name })
+
+      const workoutsCol = db.collection('workouts')
+      const sessions = await workoutsCol.find({ 'exercises.name': name }).toArray()
+
+      let updatedSessions = 0
+      for (const session of sessions) {
+        const before = session.needs_muscle_group_clarification || []
+        if (!before.includes(name)) continue
+        const after = before.filter(n => n !== name)
+        await workoutsCol.updateOne(
+          { _id: session._id },
+          { $set: { needs_muscle_group_clarification: after, updated_at: new Date() } }
+        )
+        updatedSessions += 1
+      }
+
+      res.json({ exercise, updated_sessions: updatedSessions })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -700,16 +753,20 @@ module.exports = function (getDB) {
 
       const libCol = db.collection('exercises_library')
       const newExercises = []
+      const libByName = new Map()
       for (const entry of entries) {
         const escaped = entry.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
         let libDoc = await libCol.findOne({ name: { $regex: new RegExp(`^${escaped}$`, 'i') } })
         if (!libDoc) {
           // Auto-create a minimal library entry — unit "не задано" (#1318 KROK 1: never
           // guess). KROK 2 fills weight_unit once the owner answers, this route never does.
+          // muscle_group is likewise never guessed (#1408) — surfaced below via
+          // needs_muscle_group_clarification instead of staying a silent null.
           const created = { name: entry.name, muscle_group: null, equipment: null, weight_unit: null, created_at: new Date() }
           const insertResult = await libCol.insertOne(created)
           libDoc = { ...created, _id: insertResult.insertedId }
         }
+        libByName.set(entry.name, libDoc)
         newExercises.push(buildExerciseFromParsed(entry, libDoc.weight_unit ?? null))
       }
 
@@ -724,6 +781,7 @@ module.exports = function (getDB) {
           source: sessionSource,
           exercises: newExercises,
           needs_unit_clarification: exercisesNeedingUnit(newExercises),
+          needs_muscle_group_clarification: exercisesNeedingMuscleGroup(newExercises, libByName),
           created_at: new Date(),
         }
         const insertResult = await workoutsCol.insertOne(doc)
@@ -731,11 +789,21 @@ module.exports = function (getDB) {
       } else {
         const mergedExercises = mergeExercisesIntoDoc(existing.exercises, newExercises)
         const needsUnitClarification = exercisesNeedingUnit(mergedExercises)
+        // #1408: exercises carried over from `existing` that this POST's text didn't
+        // touch have no entry in libByName yet — resolve them with one extra lookup so
+        // needs_muscle_group_clarification reflects the FULL merged array, mirroring
+        // needs_unit_clarification's own "recompute from the full merged array" rule.
+        const unresolvedNames = mergedExercises.map(ex => ex.name).filter(n => !libByName.has(n))
+        if (unresolvedNames.length > 0) {
+          const extraLibDocs = await libCol.find({ name: { $in: unresolvedNames } }).toArray()
+          for (const doc of extraLibDocs) libByName.set(doc.name, doc)
+        }
+        const needsMuscleGroupClarification = exercisesNeedingMuscleGroup(mergedExercises, libByName)
         await workoutsCol.updateOne(
           { _id: existing._id },
-          { $set: { exercises: mergedExercises, needs_unit_clarification: needsUnitClarification, updated_at: new Date() } }
+          { $set: { exercises: mergedExercises, needs_unit_clarification: needsUnitClarification, needs_muscle_group_clarification: needsMuscleGroupClarification, updated_at: new Date() } }
         )
-        resultDoc = { ...existing, exercises: mergedExercises, needs_unit_clarification: needsUnitClarification }
+        resultDoc = { ...existing, exercises: mergedExercises, needs_unit_clarification: needsUnitClarification, needs_muscle_group_clarification: needsMuscleGroupClarification }
       }
 
       res.status(existing ? 200 : 201).json({ ...resultDoc, skipped: skipped.length > 0 ? skipped : undefined })
