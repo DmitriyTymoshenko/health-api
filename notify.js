@@ -1,13 +1,17 @@
 const https = require('https')
 
-const BOT_TOKEN = '7825994645:AAEXg7OaMw2FBOQ9loY-V96IFcYoKT2KqRc'
-const CHAT_ID = '455440443'
+const BOT_TOKEN = process.env.TELEGRAM_BOT_LISA || ''
+const CHAT_ID = process.env.OWNER_TELEGRAM_ID || ''
 const DEFAULT_CALORIE_LIMIT = 2200
 const DEFICIT_GOAL = 500
 const WARN_THRESHOLD = 0.80
 
 function sendTelegram(text) {
   return new Promise((resolve) => {
+    if (!BOT_TOKEN || !CHAT_ID) {
+      console.warn('[notify] TELEGRAM_BOT_LISA/OWNER_TELEGRAM_ID missing — alert skipped')
+      return resolve()
+    }
     const body = JSON.stringify({ chat_id: CHAT_ID, text, parse_mode: 'HTML' })
     const req = https.request({
       hostname: 'api.telegram.org',
