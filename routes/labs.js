@@ -2,6 +2,7 @@ const { Router } = require('express')
 const multer = require('multer')
 const path = require('path')
 const fs = require('fs')
+const { formatDateKyiv, daysBetweenDateStrings } = require('../lib/training-program')
 
 const upload = multer({
   dest: '/tmp/health-api/uploads/',
@@ -142,14 +143,32 @@ function parseSynevoLine(line) {
   return null
 }
 
+// #870: is `value` a plausible reading for `key`, or garbage the parser scraped
+// off an adjacent line/column? The old check (`value <= ref.max * 20`) had NO
+// lower bound at all, so hba1c=1 (min 4.0), free_t4=4 (min 10.0) and
+// vitamin_b12=12 (min 148) all sailed through as "found" values. Widened window
+// is deliberately asymmetric (min*0.5 .. max*3): real low-normal/high-normal
+// readings sit close to the reference band (e.g. testosterone 11.8 vs min 12.1),
+// while a genuinely swapped/garbled number tends to be an order of magnitude off.
+// Verified against the 4 known-bad #1409/#1415 numbers — see labs.test.ts.
+function isPlausible(key, value) {
+  const ref = REFERENCE_RANGES[key]
+  if (!ref) return true // no known reference — nothing to validate against
+  return value >= ref.min * 0.5 && value <= ref.max * 3
+}
+
+// Returns { values, warnings }. `values` only ever holds plausible numbers —
+// anything that fails isPlausible() goes to `warnings[key]` instead, so a
+// garbled parse can never silently occupy a biomarker's slot (#870 A1).
 function parsePdfText(text) {
-  const results = {}
+  const values = {}
+  const warnings = {}
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     for (const { key, patterns } of PATTERNS) {
-      if (results[key]) continue
+      if (values[key] || warnings[key]) continue
       if (!matchPattern(line, patterns)) continue
 
       let value = parseSynevoLine(line)
@@ -157,15 +176,19 @@ function parsePdfText(text) {
       if (value === null && lines[i+2]) value = parseSynevoLine(lines[i+2])
 
       if (value !== null && !isNaN(value) && value > 0) {
-        const ref = REFERENCE_RANGES[key]
-        // Sanity: must be within 20x the max reference (filter garbage)
-        if (!ref || value <= ref.max * 20) {
-          results[key] = value
+        if (isPlausible(key, value)) {
+          values[key] = value
+        } else {
+          const ref = REFERENCE_RANGES[key]
+          warnings[key] = {
+            value,
+            reason: `поза плаузибельним діапазоном ${ref ? `${(ref.min * 0.5).toFixed(2)}–${(ref.max * 3).toFixed(2)} ${ref.unit}` : ''}`.trim(),
+          }
         }
       }
     }
   }
-  return results
+  return { values, warnings }
 }
 
 function extractDateFromPdf(text) {
@@ -223,7 +246,7 @@ const RETEST_INTERVALS = {
   alt: 180, ast: 180, creatinine: 180,
 }
 
-module.exports = function (getDB) {
+function makeRouter(getDB) {
   const router = Router()
 
   // GET /api/labs — list all lab results (feeds the dashboard "Історія" tab)
@@ -242,10 +265,14 @@ module.exports = function (getDB) {
   // GET /api/labs/latest — most recent result per biomarker
   // #1415: same excluded:true filter — a garbled duplicate document must never
   // win the "latest value" slot for any biomarker.
+  // #870 A4: every marker also carries `age_days` (Kyiv calendar day) so the
+  // consumer (dashboard, Lisa) decides freshness from the data's OWN date,
+  // never from a value the API silently deemed "recent enough".
   router.get('/latest', async (req, res) => {
     try {
       const db = getDB()
       const all = await db.collection('lab_results').find({ excluded: { $ne: true } }).sort({ date: -1 }).toArray()
+      const todayStr = formatDateKyiv(new Date())
       const latest = {}
       for (const entry of all) {
         for (const [key, val] of Object.entries(entry.values || {})) {
@@ -253,6 +280,7 @@ module.exports = function (getDB) {
             latest[key] = {
               value: val,
               date: entry.date,
+              age_days: daysBetweenDateStrings(entry.date, todayStr),
               source: entry.source || 'manual',
               status: getStatus(key, val),
               ref: REFERENCE_RANGES[key] || null,
@@ -401,20 +429,19 @@ module.exports = function (getDB) {
   // POST /api/labs/upload — upload and parse PDF
   router.post('/upload', upload.single('pdf'), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' })
-    
+
     try {
       const pdfParse = require('pdf-parse')
       const buffer = fs.readFileSync(req.file.path)
       const data = await pdfParse(buffer)
-      
+
       // Clean up uploaded file
       fs.unlinkSync(req.file.path)
-      
-      const extracted = parsePdfText(data.text)
+
+      const { values: extracted, warnings } = parsePdfText(data.text)
       const pdfDate = extractDateFromPdf(data.text)
-      const date = req.body.date || pdfDate || new Date().toISOString().split('T')[0]
-      
-      if (Object.keys(extracted).length === 0) {
+
+      if (Object.keys(extracted).length === 0 && Object.keys(warnings).length === 0) {
         return res.json({
           parsed: false,
           detected_date: pdfDate,
@@ -423,23 +450,101 @@ module.exports = function (getDB) {
           values: {}
         })
       }
-      
-      // Save to DB
+
+      // #870 A2: date is REQUIRED provenance, never a silent `new Date()`.
+      // `req.body.date` wins (explicit user choice) over a PDF-detected date;
+      // if neither is available the upload is rejected outright — no document
+      // with a guessed/"today" date ever reaches lab_results.
+      let date, dateSource
+      if (req.body.date) {
+        date = req.body.date
+        dateSource = 'manual'
+      } else if (pdfDate) {
+        date = pdfDate
+        dateSource = 'pdf'
+      } else {
+        return res.status(400).json({
+          error: 'Не вдалося визначити дату аналізу — PDF не містить розпізнаваної дати. Вкажіть дату вручну (поле date).',
+          detected_date: null,
+          found: Object.keys(extracted).length,
+        })
+      }
+
+      const needsReview = Object.keys(warnings).length > 0
       const db = getDB()
+
+      // #870 A3: two uploads for the same date are the same blood draw parsed
+      // twice — merge into the existing document instead of letting them
+      // compete in `/latest`'s first-seen-wins sort. A null/missing slot on
+      // the existing doc does NOT "occupy" the key (Max #1415 Low); a real
+      // conflicting non-null value is kept as-is and flagged, never silently
+      // overwritten, and never deleted (no deleteOne — audit trail stays).
+      const existing = await db.collection('lab_results').findOne({ date, excluded: { $ne: true } })
+
+      if (existing) {
+        const mergedValues = { ...(existing.values || {}) }
+        const conflicts = {}
+        for (const [key, val] of Object.entries(extracted)) {
+          const cur = mergedValues[key]
+          if (cur === undefined || cur === null) {
+            mergedValues[key] = val
+          } else if (cur !== val) {
+            conflicts[key] = { kept: cur, incoming: val }
+          }
+        }
+
+        const mergedWarnings = { ...(existing.parse_warnings || {}), ...warnings }
+        const hasConflicts = Object.keys(conflicts).length > 0
+        const update = {
+          values: mergedValues,
+          updated_at: new Date(),
+        }
+        if (Object.keys(mergedWarnings).length > 0) update.parse_warnings = mergedWarnings
+        if (hasConflicts) update.merge_conflicts = { ...(existing.merge_conflicts || {}), ...conflicts }
+        if (existing.needs_review || needsReview || hasConflicts) update.needs_review = true
+        update.merged_filenames = [
+          ...(existing.merged_filenames || [existing.filename].filter(Boolean)),
+          req.file.originalname,
+        ]
+
+        await db.collection('lab_results').updateOne({ _id: existing._id }, { $set: update })
+        const updatedDoc = await db.collection('lab_results').findOne({ _id: existing._id })
+
+        return res.json({
+          parsed: true,
+          merged: true,
+          found: Object.keys(extracted).length,
+          warnings: Object.keys(warnings).length,
+          conflicts: Object.keys(conflicts).length,
+          detected_date: pdfDate,
+          date_source: dateSource,
+          entry: updatedDoc,
+        })
+      }
+
+      // Save to DB — `detected_date`/`date_source` are written to the DOCUMENT
+      // itself (#870 A2), not just the response, so provenance survives reads.
       const doc = {
         date,
         values: extracted,
         source: 'pdf',
         filename: req.file.originalname,
-        created_at: new Date()
+        detected_date: pdfDate,
+        date_source: dateSource,
+        created_at: new Date(),
+      }
+      if (needsReview) {
+        doc.parse_warnings = warnings
+        doc.needs_review = true
       }
       const result = await db.collection('lab_results').insertOne(doc)
-      
+
       res.json({
         parsed: true,
         found: Object.keys(extracted).length,
+        warnings: Object.keys(warnings).length,
         detected_date: pdfDate,
-        date_source: pdfDate ? 'pdf' : (req.body.date ? 'manual' : 'today'),
+        date_source: dateSource,
         entry: { ...doc, _id: result.insertedId }
       })
     } catch (err) {
@@ -450,3 +555,14 @@ module.exports = function (getDB) {
 
   return router
 }
+
+// Test-only exports (#870): expose the pure parsing/validation logic so tests
+// import the ACTUAL production code path instead of maintaining a second,
+// divergence-prone copy (the pre-existing mirror-test class this repo already
+// has one instance of, in labs.test.ts — do not add a second one here).
+module.exports = makeRouter
+module.exports.parsePdfText = parsePdfText
+module.exports.extractDateFromPdf = extractDateFromPdf
+module.exports.isPlausible = isPlausible
+module.exports.getStatus = getStatus
+module.exports.REFERENCE_RANGES = REFERENCE_RANGES

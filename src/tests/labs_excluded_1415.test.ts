@@ -46,14 +46,13 @@ function makeApp(rows: Array<Record<string, unknown>>) {
 
 // Mirrors the LIVE post-#1415 state: main_result.pdf (valid) + extra_res_50964.pdf
 // (excluded:true after the #1415 mutation) for the same date, 2026-03-31.
+// #870 A6 (Max #1415 Medium tech-debt): the excluded document is listed FIRST
+// on purpose. With main_result.pdf first, `/latest`'s first-seen-wins sort would
+// pick the right values even if the `excluded:true` filter were silently broken
+// — every assert below would stay green on pre-#1415 code too. Excluded-first
+// makes each assert genuinely red-first: it only passes because the filter
+// actually removes the excluded row before first-seen-wins ever sees it.
 const ROWS = [
-  {
-    _id: '69cbbb7762a7ccf460a0a995',
-    date: '2026-03-31',
-    values: { alt: 23, hba1c: null, testosterone: 11.8 },
-    source: 'pdf',
-    filename: 'main_result.pdf',
-  },
   {
     _id: '69cbbc68203a8883cd33fc40',
     date: '2026-03-31',
@@ -63,6 +62,13 @@ const ROWS = [
     excluded: true,
     excluded_reason: '#1409 R9: битий парсинг',
     parse_status: 'invalid',
+  },
+  {
+    _id: '69cbbb7762a7ccf460a0a995',
+    date: '2026-03-31',
+    values: { alt: 23, hba1c: null, testosterone: 11.8 },
+    source: 'pdf',
+    filename: 'main_result.pdf',
   },
 ]
 
