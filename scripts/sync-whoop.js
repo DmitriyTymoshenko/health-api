@@ -539,8 +539,10 @@ function pickLongerSleep(current, candidate) {
   return (candidate.total_sleep_ms ?? -1) > (current.total_sleep_ms ?? -1) ? candidate : current
 }
 
-// #1324 fix: an OPEN cycle (score_state can read SCORED with `end: null` — WHOOP
-// keeps rolling a live strain/calories score before the cycle formally closes)
+// #1324 fix (SUPERSEDED by #1322 below — kept + still exported/tested as the
+// historical record of this defect class, no longer called from syncDate):
+// an OPEN cycle (score_state can read SCORED with `end: null` — WHOOP keeps
+// rolling a live strain/calories score before the cycle formally closes)
 // satisfies the WHOOP API's overlap filter for the query window of MULTIPLE
 // consecutive dates, not just the one it truly belongs to. Live-verified
 // 10.09.2026: cycle_id=1781650684 (start=2026-09-08T20:55:07.390Z, end:null at
@@ -560,6 +562,21 @@ function pickLongerSleep(current, candidate) {
 // file — #825's ~00:10-00:31 Kyiv-after vs this ticket's ~23:36-23:55
 // Kyiv-before — so no fixed cutoff offset is safe to hardcode; identity against
 // the already-settled neighbor is). Exported for direct unit testing.
+//
+// #1322 finding (10.09.2026, Apex triage comment): this patch fixes ONE
+// SYMPTOM (a candidate identical to the ALREADY-STORED previous day) but is a
+// no-op precisely when that previous day's doc doesn't exist yet — e.g. a
+// cycle open >2 calendar days, or the previous day's write having been skipped
+// by this same guard. Root cause was the UPSERT KEY itself: `whoop_cycles` was
+// keyed on `{date: dateStr}` — the REQUEST WINDOW's own label — not on the
+// cycle's identity, so the SAME cycle_id landing in two adjacent-day windows
+// (structurally guaranteed by WHOOP cycles starting ~00:10-00:31 Kyiv) always
+// produced two DOCUMENTS. #1322 fixes the root cause below (buildCycleDoc /
+// resolveCycleWrites): upsert key → `{cycle_id}`, `date` computed from Rule B
+// (`KyivDay(start+12h)`, chosen in #1296 — 0/632 instability vs shifting the
+// cutoff ±1h, vs 440/632 for `KyivDay(end)`) directly from the candidate's OWN
+// `start`, independent of which window fetched it and with NO Mongo lookup of
+// a neighboring day's doc — so the exact no-op gap above cannot recur.
 function filterCyclesByPrevDay(cycles, prevCycleId) {
   if (!cycles || !cycles.length || !prevCycleId) return cycles || []
   return cycles.filter(c => String(c.id) !== prevCycleId)
@@ -570,6 +587,64 @@ function filterCyclesByPrevDay(cycles, prevCycleId) {
 function prevCalendarDateStr(dateStr) {
   const [y, m, d] = dateStr.split('-').map(Number)
   return toDateStr(new Date(Date.UTC(y, m - 1, d - 1)))
+}
+
+// #1322: canonical "day a cycle belongs to" — Rule B, named/measured in #1296
+// (`docs`/task #1296 comments: 0/632 instability under a synthetic ±1h shift,
+// vs 440/632 for `KyivDay(end)`). Depends ONLY on `start`, so an OPEN cycle
+// (`end: null`) resolves the identical stable date before AND after it closes
+// — no separate "self-heal on close" logic is needed; closing a cycle just
+// upserts more fields onto the SAME `{cycle_id}` document (see
+// resolveCycleWrites below). Exported so #1326 (backfill of whoop_recovery
+// rows with no whoop_cycles doc) computes the SAME date by name, never a
+// re-derived copy.
+function kyivDayPlus12(startIso) {
+  const d = new Date(new Date(startIso).getTime() + 12 * 3600 * 1000)
+  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Kiev', year: 'numeric', month: '2-digit', day: '2-digit' })
+  return fmt.format(d)
+}
+
+// Pure: build the whoop_cycles doc for one raw WHOOP `/cycle` record. `date`
+// is ALWAYS Rule B on `c.start` — never the request window's dateStr. Exported
+// so #1326's backfill reuses the EXACT field list/shape by name instead of
+// re-deriving it in parallel (closes the same class of gap #1024 fixed for
+// buildSleepMetricFields).
+function buildCycleDoc(c, now) {
+  const kcal = c.score?.kilojoule ? Math.round(c.score.kilojoule / 4.184) : null
+  return {
+    date: kyivDayPlus12(c.start),
+    cycle_id: String(c.id),
+    start: c.start ?? null,
+    end: c.end ?? null,
+    timezone_offset: c.timezone_offset ?? null,
+    score_state: c.score_state ?? null,
+    strain: c.score?.strain ?? null,
+    kilojoule: c.score?.kilojoule ?? null,
+    calories_burned: kcal,
+    avg_heart_rate: c.score?.average_heart_rate ?? null,
+    max_heart_rate: c.score?.max_heart_rate ?? null,
+    synced_at: now,
+  }
+}
+
+// #1322 fix, core of the ticket: for a `/cycle` window fetch, compute (a) the
+// FULL whoop_cycles write list — one doc per RAW candidate, keyed by its own
+// `cycle_id`, dated by Rule B on its OWN `start` — and (b) which candidate (if
+// any) canonically SETTLES `dateStr` itself (Rule B match against the window's
+// own date), for downstream recovery/sleep matching within syncDate. Every
+// candidate gets written regardless of which window surfaced it: since the key
+// is `cycle_id` and the date is deterministic from `start`, a cycle spilling
+// into an adjacent window (the #1324 scenario) is a harmless idempotent
+// re-upsert of the SAME document — never a second one under a different date.
+// `settled` mirrors the OLD `cycles`-loop's purpose (pick "the" cycle for this
+// exact calendar day for recovery/sleep) but by a direct, self-contained Rule B
+// match instead of an identity-exclusion heuristic against a Mongo-stored
+// neighbor — so unlike filterCyclesByPrevDay there is no "previous day's doc
+// doesn't exist yet" no-op case. Pure; exported for direct unit testing.
+function resolveCycleWrites(rawCycles, dateStr, now) {
+  const writes = (rawCycles || []).map(c => ({ cycle_id: String(c.id), doc: buildCycleDoc(c, now) }))
+  const settledWrite = writes.find(w => w.doc.date === dateStr) || null
+  return { writes, settled: settledWrite ? settledWrite.doc : null }
 }
 
 // #825 fix: the `/cycle` branch above settles on the OLDEST cycle in the UTC-day
@@ -671,38 +746,25 @@ async function syncDate(db, token, dateStr) {
     const cyclesResp = await whoopGet(token,
       `/cycle?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`)
     const rawCycles = cyclesResp?.records || []
-    // #1324: reject any candidate already assigned to the PREVIOUS calendar day —
-    // see filterCyclesByPrevDay doc comment above for the live-verified mechanism.
-    const prevDateStr = prevCalendarDateStr(dateStr)
-    const prevDoc = await db.collection('whoop_cycles').findOne({ date: prevDateStr })
-    const cycles = filterCyclesByPrevDay(rawCycles, prevDoc?.cycle_id ?? null)
-    if (rawCycles.length && !cycles.length) {
-      log(`  [cycles] ${dateStr}: all ${rawCycles.length} candidate(s) already belong to ${prevDateStr} ` +
-        `(cycle_id=${prevDoc.cycle_id}, still open) — leaving ${dateStr} empty rather than duplicating`)
-    }
-    for (const c of cycles) {
-      const kcal = c.score?.kilojoule ? Math.round(c.score.kilojoule / 4.184) : null
-      const doc = {
-        date: dateStr,
-        cycle_id: String(c.id),
-        start: c.start ?? null,
-        end: c.end ?? null,
-        timezone_offset: c.timezone_offset ?? null,
-        score_state: c.score_state ?? null,
-        strain: c.score?.strain ?? null,
-        kilojoule: c.score?.kilojoule ?? null,
-        calories_burned: kcal,
-        avg_heart_rate: c.score?.average_heart_rate ?? null,
-        max_heart_rate: c.score?.max_heart_rate ?? null,
-        synced_at: now,
-      }
+    // #1322: upsert key is {cycle_id}, date is Rule B on c.start — see
+    // resolveCycleWrites doc comment above. Every raw candidate is written
+    // (own cycle_id, own correct date); `settled` is only used below to decide
+    // what recovery/sleep should match for THIS dateStr.
+    const { writes, settled } = resolveCycleWrites(rawCycles, dateStr, now)
+    for (const w of writes) {
       await db.collection('whoop_cycles').updateOne(
-        { date: dateStr },
-        { $set: doc },
+        { cycle_id: w.cycle_id },
+        { $set: w.doc },
         { upsert: true }
       )
-      cycleResult = doc
-      cycleId = String(c.id)
+    }
+    if (rawCycles.length && !settled) {
+      log(`  [cycles] ${dateStr}: ${rawCycles.length} candidate(s) in window belong to a different ` +
+        `Kyiv day by Rule B — none settled for ${dateStr} (written under their own date instead)`)
+    }
+    if (settled) {
+      cycleResult = settled
+      cycleId = settled.cycle_id
     }
   } catch (e) {
     log(`  [cycles] ${dateStr} error: ${e.message}`)
@@ -889,6 +951,14 @@ async function main() {
   log('Connected to MongoDB')
 
   await db.collection('whoop_cycles').createIndex({ date: 1 }, { unique: true }).catch(() => {})
+  // #1322 (B): natural-key uniqueness guard, added AFTER the writer fix above
+  // was proven live at 0 dup groups (Apex measurement 19.09 14:11 EEST: 571
+  // docs, dup_groups(cycle_id)=0) — index sits on top of already-clean data.
+  // Loud on failure (unlike the sibling .catch(() => {}) calls here): a silent
+  // swallow on THIS index would eat the exact guarantee #1322 exists to add.
+  await db.collection('whoop_cycles').createIndex({ cycle_id: 1 }, { unique: true }).catch((e) => {
+    log(`WARNING: whoop_cycles {cycle_id:1} unique index creation failed: ${e.message}`)
+  })
   await db.collection('whoop_recovery').createIndex({ date: 1 }, { unique: true }).catch(() => {})
   await db.collection('whoop_sleep').createIndex({ sleep_id: 1 }, { unique: true, sparse: true }).catch(() => {})
   await db.collection('whoop_sleep').createIndex({ date: 1 }).catch(() => {})
@@ -954,6 +1024,7 @@ module.exports = { refreshToken, getToken, alertReauthIfDue, markSyncSuccess, Re
   DEFAULT_UA, buildRequestHeaders, captureSetCookie, cookieHeaderFor, resetCookieJar, buildMetricsDoc, buildSleepMetricFields, pickLongerSleep,
   pickRecoveryByCycle, filterSleepsByCycle,
   filterCyclesByPrevDay, prevCalendarDateStr,
+  kyivDayPlus12, buildCycleDoc, resolveCycleWrites,
   preflightProbe }
 
 // Run only when invoked directly, not when required by a test.

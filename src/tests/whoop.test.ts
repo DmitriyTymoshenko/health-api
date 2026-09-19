@@ -665,6 +665,102 @@ describe('sync-whoop — #1324 cycle dedup: reject a candidate already assigned 
   })
 })
 
+describe('sync-whoop — #1322: whoop_cycles keyed by cycle_id, date = Rule B (KyivDay(start+12h))', () => {
+  // #1322 supersedes #1324's identity-exclusion patch (filterCyclesByPrevDay,
+  // tested above) with a root-cause fix: the OLD upsert key was
+  // `{date: dateStr}` — the request window's own label. #1296 named Rule B
+  // (`KyivDay(start+12h)`) as the canonical day for a cycle (0/632 instability
+  // vs 440/632 for `KyivDay(end)`); the fix below keys `whoop_cycles` on
+  // `{cycle_id}` instead and computes `date` from Rule B on the candidate's
+  // OWN `start` — independent of which window fetched it.
+  const { kyivDayPlus12, buildCycleDoc, resolveCycleWrites } = require('../../scripts/sync-whoop')
+
+  // Same live fixture as the #1324 block above (10.09.2026 trace): an OPEN
+  // cycle (end:null) that legitimately appears in BOTH the 09-09 and 09-10
+  // UTC-day `/cycle` query windows.
+  const staleOpenCycle = {
+    id: 1781650684, start: '2026-09-08T20:55:07.390Z', end: null, score_state: 'SCORED',
+    score: { strain: 15.1223755, kilojoule: 14615, average_heart_rate: 68, max_heart_rate: 154 },
+  }
+  // A genuinely NEW cycle that starts the following Kyiv night — belongs to 09-10.
+  const genuinelyNewCycle = {
+    id: 1782999999, start: '2026-09-09T21:05:00.000Z', end: null, score_state: 'SCORED',
+    score: { strain: 2.1, kilojoule: 900, average_heart_rate: 60, max_heart_rate: 100 },
+  }
+
+  it('kyivDayPlus12 resolves the fixture cycle to 2026-09-09 (Rule B, matches #1296 measurement)', () => {
+    expect(kyivDayPlus12(staleOpenCycle.start)).toBe('2026-09-09')
+    expect(kyivDayPlus12(genuinelyNewCycle.start)).toBe('2026-09-10')
+  })
+
+  it('buildCycleDoc keys by cycle_id and dates by Rule B, not by any dateStr argument', () => {
+    const doc = buildCycleDoc(staleOpenCycle, '2026-09-10T00:00:00.000Z')
+    expect(doc.cycle_id).toBe('1781650684')
+    expect(doc.date).toBe('2026-09-09') // Rule B on start — never the window label
+    expect(doc.end).toBeNull()
+    expect(doc.strain).toBe(15.1223755)
+    expect(doc.synced_at).toBe('2026-09-10T00:00:00.000Z')
+  })
+
+  it('RED: reproduces the pre-#1322 bug at the write-list level — {date: dateStr} keying writes the SAME cycle_id under 2 different date keys', () => {
+    // Mirrors the OLD (pre-fix) write: doc.date := the window's dateStr.
+    const oldStyleWrite = (c: { id: number }, dateStr: string) => ({ date: dateStr, cycle_id: String(c.id) })
+    const day1 = oldStyleWrite(staleOpenCycle, '2026-09-09')
+    const day2 = oldStyleWrite(staleOpenCycle, '2026-09-10')
+    // Two Mongo upserts keyed on {date: dateStr} for the SAME cycle_id → 2 docs.
+    expect(day1.cycle_id).toBe(day2.cycle_id)
+    expect(day1.date).not.toBe(day2.date) // this is exactly the 73-dup-group defect
+  })
+
+  it('GREEN: resolveCycleWrites keys by cycle_id — the SAME cycle across 2 adjacent windows collapses to ONE document after simulated upserts', () => {
+    const now = '2026-09-10T04:23:00.000Z'
+    const day09 = resolveCycleWrites([staleOpenCycle], '2026-09-09', now)
+    const day10 = resolveCycleWrites([staleOpenCycle], '2026-09-10', now)
+
+    // Simulate Mongo's own upsert semantics: a Map keyed by cycle_id, later
+    // write overwrites earlier — exactly what updateOne({cycle_id}, {$set}, {upsert:true})
+    // does against a live collection across two cron runs.
+    const collection = new Map<string, unknown>()
+    for (const w of [...day09.writes, ...day10.writes]) collection.set(w.cycle_id, w.doc)
+
+    expect(collection.size).toBe(1) // 0 new dup groups — the ticket's own acceptance shape
+    const stored = collection.get('1781650684') as { date: string; cycle_id: string }
+    expect(stored.date).toBe('2026-09-09') // canonical day, independent of which window wrote it last
+
+    // dateStr='2026-09-09' settles this cycle (used for recovery/sleep matching);
+    // dateStr='2026-09-10' does NOT — it must stay empty, never mis-attribute
+    // this cycle's data to the wrong Kyiv day.
+    expect(day09.settled?.cycle_id).toBe('1781650684')
+    expect(day10.settled).toBeNull()
+  })
+
+  it('a genuinely new cycle in the SAME window as a stale spillover still settles correctly for its own date', () => {
+    const now = '2026-09-10T04:23:00.000Z'
+    const day10 = resolveCycleWrites([staleOpenCycle, genuinelyNewCycle], '2026-09-10', now)
+    expect(day10.writes.map((w: { cycle_id: string }) => w.cycle_id).sort()).toEqual(['1781650684', '1782999999'])
+    expect(day10.settled?.cycle_id).toBe('1782999999') // only this one is Rule-B-dated 2026-09-10
+  })
+
+  it('self-heals an OPEN cycle on close: same {cycle_id} key before and after `end` is set — one document, not two', () => {
+    const openNow = '2026-09-09T05:00:00.000Z'
+    const closedNow = '2026-09-09T10:00:00.000Z'
+    const openWrite = resolveCycleWrites([staleOpenCycle], '2026-09-09', openNow).writes[0]
+    const closedCandidate = { ...staleOpenCycle, end: '2026-09-09T09:10:00.000Z', score_state: 'SCORED' }
+    const closedWrite = resolveCycleWrites([closedCandidate], '2026-09-09', closedNow).writes[0]
+
+    expect(openWrite.cycle_id).toBe(closedWrite.cycle_id) // same upsert key
+    expect(openWrite.doc.date).toBe(closedWrite.doc.date) // Rule B unaffected by `end`
+    expect(openWrite.doc.end).toBeNull()
+    expect(closedWrite.doc.end).toBe('2026-09-09T09:10:00.000Z')
+  })
+
+  it('handles an empty candidate window (no cycles found)', () => {
+    const result = resolveCycleWrites([], '2026-09-09', '2026-09-09T05:00:00.000Z')
+    expect(result.writes).toEqual([])
+    expect(result.settled).toBeNull()
+  })
+})
+
 describe('toDateStr — date formatting', () => {
   it('formats date as YYYY-MM-DD', () => {
     const d = new Date('2026-04-17T00:00:00')
