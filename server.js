@@ -320,6 +320,7 @@ app.use('/api/profile', require('./routes/personal_profile')(getDB))
 app.use('/api/recommendations', require('./routes/recommendations')(getDB))
 app.use('/api/training-program', require('./routes/training_program')(getDB))
 app.use('/api/targets', require('./routes/targets')(getDB)) // #1295 unified day-level targets resolver
+app.use('/api/readiness', require('./routes/readiness')(getDB)) // #1292 Ф3 — readiness badge (recovery + exercise-trend, lower-of-two)
 
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }))

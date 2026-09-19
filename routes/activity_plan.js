@@ -1,5 +1,6 @@
 const { Router } = require('express')
 const { ObjectId } = require('mongodb')
+const { recoveryZone } = require('../lib/recovery-zone')
 
 module.exports = function (getDB) {
   const router = Router()
@@ -110,13 +111,16 @@ module.exports = function (getDB) {
       const workoutStrainToday = todayWorkouts.reduce((s, w) => s + (w.strain || 0), 0)
 
       // Determine FULL day target from recovery
-      let dayStrainMin, dayStrainMax, zone
-      if (recoveryScore >= 67) {
-        dayStrainMin = 14; dayStrainMax = 18; zone = 'hard'
-      } else if (recoveryScore >= 34) {
-        dayStrainMin = 10; dayStrainMax = 14; zone = 'moderate'
+      // Zone thresholds live in lib/recovery-zone.js — task #1292 REUSE requirement,
+      // same >=67/>=34/else boundaries as before this extraction (behavior unchanged).
+      let dayStrainMin, dayStrainMax
+      const zone = recoveryZone(recoveryScore)
+      if (zone === 'hard') {
+        dayStrainMin = 14; dayStrainMax = 18
+      } else if (zone === 'moderate') {
+        dayStrainMin = 10; dayStrainMax = 14
       } else {
-        dayStrainMin = 0; dayStrainMax = 10; zone = 'light'
+        dayStrainMin = 0; dayStrainMax = 10
       }
 
       // Remaining workout strain = (target - base) - workouts already done
