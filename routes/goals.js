@@ -8,6 +8,10 @@ const { requireFields } = require('../lib/validate')
 // the same day (BASE RULE). #1298 R4 (owner decision 18.09): water/steps/supplements
 // dropped from this endpoint entirely — see the /streaks handler below.
 const { resolveDayTargets } = require('../lib/targets-resolver')
+// #873 Частина 4: flat-sum reduce below missed legacy nested `items[]` records
+// (#862 class) — reuse the SAME resolver aggregateDay/summaryHandler already use,
+// not a re-declared local sum (BASE RULE, lessons-learned "reuse by name").
+const { macroContribution } = require('../lib/nutrition-aggregate')
 
 module.exports = function (getDB) {
   const router = Router()
@@ -133,8 +137,9 @@ module.exports = function (getDB) {
       const nutritionByDay = {}
       for (const n of nutritionLogs) {
         if (!nutritionByDay[n.date]) nutritionByDay[n.date] = { kcal: 0, protein: 0 }
-        nutritionByDay[n.date].kcal += n.kcal || 0
-        nutritionByDay[n.date].protein += (n.protein_g || n.protein || 0)
+        const m = macroContribution(n)
+        nutritionByDay[n.date].kcal += m.kcal
+        nutritionByDay[n.date].protein += m.protein_g
       }
 
       // Calculate streak for each habit

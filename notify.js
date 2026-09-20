@@ -1,4 +1,8 @@
 const https = require('https')
+// #873 Частина 4: reuse the shared macroContribution (BASE RULE) — the previous
+// flat `e.kcal || 0` sum silently undercounted legacy nested items[] records
+// (#862 class), same defect as goals.js/nutrition.js/recommendations.js.
+const { macroContribution } = require('./lib/nutrition-aggregate')
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_LISA || ''
 const CHAT_ID = process.env.OWNER_TELEGRAM_ID || ''
@@ -28,7 +32,7 @@ function sendTelegram(text) {
 async function checkAndNotify(db, date, newItemName, newItemKcal) {
   try {
     const items = await db.collection('nutrition_log').find({ date }).toArray()
-    const total = items.reduce((s, e) => s + (e.kcal || 0), 0)
+    const total = items.reduce((s, e) => s + macroContribution(e).kcal, 0)
 
     // Get today's WHOOP calories burned
     const cycle = await db.collection('whoop_cycles').findOne({ date })

@@ -12,6 +12,9 @@ const {
 // unstable — 1444 at noon vs 2400 at night for the SAME day). It now reads
 // the SAME stable resolveDayTargets() every other target-facing route uses.
 const { resolveDayTargets } = require('../lib/targets-resolver')
+// #873 Частина 4: reuse the shared macroContribution (BASE RULE) for the two
+// flat-sum reduces below — they missed legacy nested items[] records (#862 class).
+const { macroContribution } = require('../lib/nutrition-aggregate')
 
 // High-protein suggestions pool
 const HIGH_PROTEIN_POOL = [
@@ -261,10 +264,11 @@ module.exports = function (getDB) {
       // 4. Calculate consumed totals
       const consumed = nutritionEntries.reduce(
         (acc, entry) => {
-          acc.calories += entry.kcal || entry.calories || 0
-          acc.protein += entry.protein_g || 0
-          acc.carbs += entry.carbs_g || 0
-          acc.fat += entry.fat_g || 0
+          const m = macroContribution(entry)
+          acc.calories += m.kcal
+          acc.protein += m.protein_g
+          acc.carbs += m.carbs_g
+          acc.fat += m.fat_g
           // Historical entries predate sat_fat_g — fall back to 0 and flag the day
           // as incomplete so the UI never presents an understated total as a fact.
           acc.sat_fat += entry.sat_fat_g || 0
@@ -591,10 +595,11 @@ module.exports = function (getDB) {
       }
       for (const entry of allEntries) {
         if (dayMap[entry.date]) {
-          dayMap[entry.date].calories += entry.kcal || entry.calories || 0
-          dayMap[entry.date].protein += entry.protein_g || 0
-          dayMap[entry.date].carbs += entry.carbs_g || 0
-          dayMap[entry.date].fat += entry.fat_g || 0
+          const m = macroContribution(entry)
+          dayMap[entry.date].calories += m.kcal
+          dayMap[entry.date].protein += m.protein_g
+          dayMap[entry.date].carbs += m.carbs_g
+          dayMap[entry.date].fat += m.fat_g
         }
       }
 

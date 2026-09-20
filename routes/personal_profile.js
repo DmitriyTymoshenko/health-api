@@ -44,6 +44,8 @@ module.exports = function (getDB) {
     body_fat_goal_pct: null,
     daily_kcal_goal: null, // null = auto-calculate from TDEE
     daily_protein_goal_g: null, // null = auto-calculate, per-goal g/kg matrix (#966, lib/nutrition-targets.js)
+    daily_fiber_goal_g: null, // null = auto-calculate, 14g/1000kcal (#873, resolveFiberGoalG)
+    daily_sugar_goal_g: null, // null = auto-calculate, WHO ≤10% of energy (#873, resolveSugarLimitG)
     daily_steps_goal: 8000,
     sleep_goal_hours: 8,
 

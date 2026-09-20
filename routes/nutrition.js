@@ -6,11 +6,11 @@ const {
   resolveDeficitKcal,
   satFatLimitG,
   satFatStatus,
-  sugarLimitG,
+  resolveSugarLimitG,
   sugarStatus,
   resolveProteinGoalG,
   resolveWeightKg,
-  fiberGoalG,
+  resolveFiberGoalG,
   goalStatus,
   rangeStatus,
 } = require('../lib/nutrition-targets')
@@ -20,7 +20,7 @@ const {
 // PURE — no DB — so this stays off the `whoop_cycles` collection (route-level test's
 // allowlist).
 const { deriveMacroRangesG } = require('../lib/targets-resolver')
-const { aggregateDay } = require('../lib/nutrition-aggregate')
+const { aggregateDay, macroContribution } = require('../lib/nutrition-aggregate')
 
 const TELEGRAM_BOT_TOKEN = '' // notifications disabled per user request
 const TELEGRAM_OWNER_ID = process.env.OWNER_TELEGRAM_ID || '455440443'
@@ -78,10 +78,11 @@ async function sendMealTelegramNotification(db, doc) {
     const todayEntries = await db.collection('nutrition_log').find({ date: today }).toArray()
     const totals = todayEntries.reduce(
       (acc, e) => {
-        acc.kcal += e.kcal || e.calories || 0
-        acc.protein_g += e.protein_g || 0
-        acc.fat_g += e.fat_g || 0
-        acc.carbs_g += e.carbs_g || 0
+        const m = macroContribution(e)
+        acc.kcal += m.kcal
+        acc.protein_g += m.protein_g
+        acc.fat_g += m.fat_g
+        acc.carbs_g += m.carbs_g
         return acc
       },
       { kcal: 0, protein_g: 0, fat_g: 0, carbs_g: 0 }
@@ -239,7 +240,7 @@ module.exports = function (getDB) {
       summary.deficit_kcal = resolveDeficitKcal(profile)
       summary.sat_fat_goal_g = satFatLimitG(kcalBasis)
       summary.sat_fat_status = satFatStatus(summary.sat_fat_g, summary.sat_fat_goal_g)
-      summary.sugar_goal_g = sugarLimitG(kcalBasis)
+      summary.sugar_goal_g = resolveSugarLimitG(profile, kcalBasis)
       summary.sugar_status = sugarStatus(summary.sugar_g, summary.sugar_goal_g)
 
       // DAILY GOALS — protein/fat as weight-derived RANGES with a midpoint POINT,
@@ -274,7 +275,7 @@ module.exports = function (getDB) {
 
       // Fiber (14 g/1000 kcal) — a target to REACH, not a ceiling, so it uses
       // goalStatus (the inverse ladder of limitStatus), never satFatStatus/sugarStatus.
-      summary.fiber_goal_g = fiberGoalG(kcalBasis)
+      summary.fiber_goal_g = resolveFiberGoalG(profile, kcalBasis)
       summary.fiber_status = goalStatus(summary.fiber_g, summary.fiber_goal_g)
 
       res.json(summary)

@@ -17,6 +17,8 @@ const {
   resolveProteinGoalG,
   resolveWeightKg,
   fiberGoalG,
+  resolveFiberGoalG,
+  resolveSugarLimitG,
   goalStatus,
   SAT_FAT_KCAL_SHARE,
   SUGAR_KCAL_SHARE,
@@ -343,6 +345,45 @@ describe('fiberGoalG — 14 g / 1000 kcal (vault 04.02, USDA/WHO)', () => {
       expect(fiberGoalG(bad)).toBe(0)
     }
   )
+})
+
+describe('resolveFiberGoalG — explicit profile override wins outright, else auto-calc from kcal (#873 Частина 1)', () => {
+  it('an explicit daily_fiber_goal_g wins outright, even over a live kcal basis', () => {
+    expect(resolveFiberGoalG({ daily_fiber_goal_g: 30 }, 1929)).toBe(30)
+  })
+
+  it('falls back to fiberGoalG(kcal) when the override is null (= auto-calculate)', () => {
+    expect(resolveFiberGoalG({ daily_fiber_goal_g: null }, 1929)).toBe(fiberGoalG(1929))
+    expect(resolveFiberGoalG(null, 1929)).toBe(fiberGoalG(1929))
+  })
+
+  it('ignores a non-positive override and falls back to auto-calc', () => {
+    expect(resolveFiberGoalG({ daily_fiber_goal_g: 0 }, 1929)).toBe(fiberGoalG(1929))
+    expect(resolveFiberGoalG({ daily_fiber_goal_g: -5 }, 1929)).toBe(fiberGoalG(1929))
+  })
+
+  it('matches Dmytro-stated defaults (25-30 g) as a valid override, distinct from the auto-calc value', () => {
+    // Profile default basis (1929 kcal) auto-calculates to 27g (see fiberGoalG table
+    // above) — an explicit 25 or 30 must NOT collapse to that auto-calc number.
+    expect(resolveFiberGoalG({ daily_fiber_goal_g: 25 }, 1929)).toBe(25)
+    expect(resolveFiberGoalG({ daily_fiber_goal_g: 30 }, 1929)).toBe(30)
+  })
+})
+
+describe('resolveSugarLimitG — explicit profile override wins outright, else auto-calc from kcal (#873 Частина 1)', () => {
+  it('an explicit daily_sugar_goal_g wins outright, even over a live kcal basis', () => {
+    expect(resolveSugarLimitG({ daily_sugar_goal_g: 40 }, 1929)).toBe(40)
+  })
+
+  it('falls back to sugarLimitG(kcal) when the override is null (= auto-calculate)', () => {
+    expect(resolveSugarLimitG({ daily_sugar_goal_g: null }, 1929)).toBe(sugarLimitG(1929))
+    expect(resolveSugarLimitG(null, 1929)).toBe(sugarLimitG(1929))
+  })
+
+  it('ignores a non-positive override and falls back to auto-calc', () => {
+    expect(resolveSugarLimitG({ daily_sugar_goal_g: 0 }, 1929)).toBe(sugarLimitG(1929))
+    expect(resolveSugarLimitG({ daily_sugar_goal_g: -5 }, 1929)).toBe(sugarLimitG(1929))
+  })
 })
 
 describe('goalStatus — the INVERSE ladder of limitStatus (protein/fiber are targets to REACH, not ceilings)', () => {
