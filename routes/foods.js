@@ -219,6 +219,23 @@ function normalizeSearchQuery(raw) {
   return String(raw || '').trim().replace(/\s+/g, ' ').toLowerCase()
 }
 
+// #873 Частина 3 reader-tolerance: 5 legacy foods_library docs carried the wrong
+// key `calories_per_100g` instead of `kcal_per_100g` (every reader — this file's
+// own /search + /, Nutrition.jsx's submitFood() — expects `kcal_per_100g`, so a
+// mismatched doc renders/logs as 0 kcal). The one-time data migration
+// (scripts/normalize-foods-key-873.js) already fixed the 4 live docs (20.09), but
+// this tolerance stays as a belt-and-suspenders reader-side guard so a future
+// stray `calories_per_100g` write (a new ingestion path, a manual insert) never
+// silently reproduces the same 0-kcal class again — never overwrites an existing
+// kcal_per_100g, only fills it in when missing.
+function normalizeFoodDoc(doc) {
+  if (doc == null) return doc
+  if (doc.kcal_per_100g == null && doc.calories_per_100g != null) {
+    return { ...doc, kcal_per_100g: doc.calories_per_100g }
+  }
+  return doc
+}
+
 // ─── Router ───────────────────────────────────────────────────────────────────
 module.exports = function (getDB) {
   const router = Router()
@@ -284,7 +301,7 @@ module.exports = function (getDB) {
         .limit(10)
         .toArray()
 
-      res.json({ source: 'library', count: local.length, results: local.map(f => ({ ...f, source: 'library' })) })
+      res.json({ source: 'library', count: local.length, results: local.map(f => normalizeFoodDoc({ ...f, source: 'library' })) })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -317,7 +334,7 @@ module.exports = function (getDB) {
           { _id: existing._id },
           { $inc: { use_count: 1 }, $set: { updated_at: new Date() } }
         )
-        return res.json({ ...existing, updated: true })
+        return res.json({ ...normalizeFoodDoc(existing), updated: true })
       }
       const result = await db.collection('foods_library').insertOne(food)
       res.status(201).json({ ...food, _id: result.insertedId })
@@ -339,7 +356,31 @@ module.exports = function (getDB) {
           ]}
         : {}
       const foods = await db.collection('foods_library').find(filter).sort({ use_count: -1 }).limit(50).toArray()
-      res.json(foods)
+      res.json(foods.map(normalizeFoodDoc))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // POST /api/foods/:id/log-use — #873 Частина 2(г): bump use_count when an
+  // ALREADY-in-library food is logged again. Before this fix, submitFood()
+  // (Nutrition.jsx) only POSTed to /api/foods (the $inc branch above) when
+  // `source !== 'library'` — so use_count incremented exactly ONCE, on the food's
+  // first save from an external source, and froze forever after that: 49/50
+  // library foods stuck at 0/1 despite dozens of REAL re-uses in nutrition_log
+  // (Valio Pro Feel logged 11x, use_count still 0). This endpoint is the missing
+  // "log another use of an existing library item" call.
+  router.post('/:id/log-use', async (req, res) => {
+    try {
+      const db = getDB()
+      const { ObjectId } = require('mongodb')
+      const result = await db.collection('foods_library').findOneAndUpdate(
+        { _id: new ObjectId(req.params.id) },
+        { $inc: { use_count: 1 }, $set: { updated_at: new Date() } },
+        { returnDocument: 'after' }
+      )
+      if (!result) return res.status(404).json({ error: 'Not found' })
+      res.json(normalizeFoodDoc(result))
     } catch (err) {
       res.status(500).json({ error: err.message })
     }

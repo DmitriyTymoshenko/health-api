@@ -316,6 +316,95 @@ module.exports = function (getDB) {
     }
   })
 
+  // GET /api/nutrition/frequent — #873 Частина 2(а): «Мої продукти» ranked by
+  // REAL usage frequency straight from nutrition_log (never foods_library's
+  // use_count, which was silently stuck at 0/1 for 49/50 foods — see the
+  // /api/foods/:id/log-use fix). Each entry carries the LAST-used portion so the
+  // frontend can add it in a single tap with no modal/amount re-entry.
+  router.get('/frequent', async (req, res) => {
+    try {
+      const db = getDB()
+      const limit = Math.min(Math.max(Number(req.query.limit) || 8, 1), 50)
+      const days = Math.min(Math.max(Number(req.query.days) || 90, 1), 365)
+      const sinceDate = new Date(Date.now() - days * 86400000).toISOString().split('T')[0]
+
+      const logs = await db.collection('nutrition_log')
+        .find({ date: { $gte: sinceDate } })
+        .sort({ date: -1 }) // most recent first, so the FIRST occurrence per name is the last use
+        .toArray()
+
+      const byName = new Map()
+      for (const e of logs) {
+        const name = typeof e.food_name === 'string' ? e.food_name.trim() : ''
+        if (!name) continue
+        if (!byName.has(name)) byName.set(name, { name, count: 0, last: e })
+        byName.get(name).count += 1
+      }
+
+      const top = [...byName.values()]
+        .sort((a, b) => b.count - a.count)
+        .slice(0, limit)
+        .map(({ name, count, last }) => ({
+          food_name: name,
+          use_count: count,
+          last_date: last.date,
+          last_meal_type: last.meal_type || null,
+          last_amount_g: last.amount_g ?? null,
+          last_food_id: last.food_id ?? null,
+          last_kcal: last.kcal ?? null,
+          last_protein_g: last.protein_g ?? null,
+          last_fat_g: last.fat_g ?? null,
+          last_carbs_g: last.carbs_g ?? null,
+          last_fiber_g: last.fiber_g ?? null,
+          last_sugar_g: last.sugar_g ?? null,
+          last_sat_fat_g: last.sat_fat_g ?? null,
+        }))
+
+      res.json(top)
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // POST /api/nutrition/repeat — #873 Частина 2(б): «Повторити вчорашній
+  // сніданок / вчорашній день». `date` = the day being populated (the date the
+  // user is viewing — same "viewed date, not real today" discipline as
+  // submitFood(), #872-1 class); source day is ALWAYS `date - 1 calendar day`.
+  // `meal_type` optional — omitted copies the whole day, present copies just
+  // that one meal. Calendar-day subtraction on the YYYY-MM-DD STRING (no
+  // timezone conversion) — dates are already stored as Kyiv-day strings
+  // everywhere in this API, so a plain -1 day is correct and boundary-free.
+  router.post('/repeat', async (req, res) => {
+    try {
+      const db = getDB()
+      const { date, meal_type } = req.body
+      if (!date || typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return res.status(400).json({ error: 'date is required (YYYY-MM-DD)' })
+      }
+      const sourceDateObj = new Date(date + 'T00:00:00Z')
+      sourceDateObj.setUTCDate(sourceDateObj.getUTCDate() - 1)
+      const sourceDate = sourceDateObj.toISOString().split('T')[0]
+
+      const filter = meal_type ? { date: sourceDate, meal_type } : { date: sourceDate }
+      const sourceEntries = await db.collection('nutrition_log').find(filter).toArray()
+
+      if (sourceEntries.length === 0) {
+        return res.json({ inserted: 0, source_date: sourceDate, entries: [] })
+      }
+
+      const now = new Date()
+      const docs = sourceEntries.map((e) => {
+        // eslint-disable-next-line no-unused-vars
+        const { _id, created_at, date: _oldDate, ...rest } = e
+        return { ...rest, date, created_at: now, repeated_from_date: sourceDate }
+      })
+      const result = await db.collection('nutrition_log').insertMany(docs)
+      const inserted = docs.map((d, i) => ({ ...d, _id: result.insertedIds[i] }))
+      res.status(201).json({ inserted: inserted.length, source_date: sourceDate, entries: inserted })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
 
   // GET /api/nutrition/meal-suggest
   // Extensive list of common foods for suggestions
@@ -360,13 +449,60 @@ module.exports = function (getDB) {
       const targetCarbs = parseFloat(carbs_g) || 50
       const targetFat = parseFloat(fat_g) || 15
 
-      // Fetch library foods
+      // #873 Частина 2(в): HISTORY FIRST — Дмитро's own nutrition_log for this
+      // meal_type, aggregated into per-100g macros + HIS OWN average real amount_g.
+      // Previously this endpoint only knew library + an abstract COMMON_FOODS list
+      // with no fiber data and no realistic portion bound — the kcal-target division
+      // alone could suggest 500g of anything (task #873 premise). Real logged amounts
+      // fix both: they carry fiber (unlike COMMON_FOODS) and give a sane portion range.
+      const historyFilter = meal_type
+        ? { meal_type, amount_g: { $gt: 0 }, kcal: { $gt: 0 } }
+        : { amount_g: { $gt: 0 }, kcal: { $gt: 0 } }
+      const historyLogs = await db.collection('nutrition_log').find(historyFilter).toArray()
+      const historyByName = new Map()
+      for (const e of historyLogs) {
+        const name = typeof e.food_name === 'string' ? e.food_name.trim() : ''
+        const amount = Number(e.amount_g)
+        if (!name || !Number.isFinite(amount) || amount <= 0) continue
+        const kcalPer100 = (Number(e.kcal) || 0) / amount * 100
+        if (!Number.isFinite(kcalPer100) || kcalPer100 <= 0) continue
+        if (!historyByName.has(name)) {
+          historyByName.set(name, { name, n: 0, kcal100: 0, protein100: 0, fat100: 0, carbs100: 0, sugar100: 0, fiber100: 0, amountSum: 0 })
+        }
+        const agg = historyByName.get(name)
+        agg.n += 1
+        agg.kcal100 += kcalPer100
+        agg.protein100 += (Number(e.protein_g) || 0) / amount * 100
+        agg.fat100 += (Number(e.fat_g) || 0) / amount * 100
+        agg.carbs100 += (Number(e.carbs_g) || 0) / amount * 100
+        agg.sugar100 += (Number(e.sugar_g) || 0) / amount * 100
+        agg.fiber100 += (Number(e.fiber_g) || 0) / amount * 100
+        agg.amountSum += amount
+      }
+      const historyNormalized = [...historyByName.values()].map(a => ({
+        name: a.name,
+        kcal_per_100g: Math.round(a.kcal100 / a.n),
+        protein_per_100g: Math.round((a.protein100 / a.n) * 10) / 10,
+        fat_per_100g: Math.round((a.fat100 / a.n) * 10) / 10,
+        carbs_per_100g: Math.round((a.carbs100 / a.n) * 10) / 10,
+        sugar_per_100g: Math.round((a.sugar100 / a.n) * 10) / 10,
+        fiber_per_100g: Math.round((a.fiber100 / a.n) * 10) / 10,
+        avg_amount_g: Math.round(a.amountSum / a.n),
+        use_count: a.n,
+        source: 'history',
+      }))
+      const historyNames = new Set(historyNormalized.map(f => f.name.toLowerCase()))
+
+      // Fetch library foods — skip names already covered by history (history carries
+      // Дмитро's OWN averaged macros/amount for that exact name, a strictly more
+      // realistic signal than the generic library entry of the same name).
       const libraryFoods = await db.collection('foods_library').find({}).toArray()
       // #926: a foods_library doc can be missing `name` (a partial/broken write — 1 of 172 docs
       // in prod as of 2026-08-07, use_count:0, not a systemic writer bug). Drop such docs before
       // any .toLowerCase()/dedup logic below, instead of crashing the whole endpoint on one bad row.
       const libraryNormalized = libraryFoods
         .filter(f => typeof f?.name === 'string' && f.name.trim())
+        .filter(f => !historyNames.has(f.name.trim().toLowerCase()))
         .map(f => ({
           name: f.name,
           kcal_per_100g: f.kcal_per_100g,
@@ -375,23 +511,36 @@ module.exports = function (getDB) {
           carbs_per_100g: f.carbs_per_100g,
           sugar_per_100g: f.sugar_per_100g || 0,
           fiber_per_100g: f.fiber_per_100g || 0,
+          // #873 Частина 2(д): serving_size_g doubles as the realistic-portion anchor
+          // when a library food has no logged history yet.
+          avg_amount_g: Number.isFinite(f.serving_size_g) && f.serving_size_g > 0 ? f.serving_size_g : null,
           source: 'library',
         }))
 
-      // Always merge library + COMMON_FOODS, dedup by name (library takes priority)
-      const existingNames = new Set(libraryNormalized.map(f => f.name.toLowerCase()))
-      const commonFoodsNorm = COMMON_FOODS
-        .filter(f => !existingNames.has(f.name.toLowerCase()))
-        .map(f => ({ ...f, source: 'common' }))
-      const allFoods = [...libraryNormalized, ...commonFoodsNorm]
+      // COMMON_FOODS is now a LAST-RESORT fallback, not an equal partner (#873 —
+      // Дмитро's own history/library must win whenever there is enough real data to
+      // suggest from) — only topped up when history+library together are too thin.
+      const MIN_REAL_CANDIDATES = 3
+      const realCandidates = [...historyNormalized, ...libraryNormalized]
+      const existingNames = new Set(realCandidates.map(f => f.name.toLowerCase()))
+      const commonFoodsNorm = realCandidates.length < MIN_REAL_CANDIDATES
+        ? COMMON_FOODS.filter(f => !existingNames.has(f.name.toLowerCase())).map(f => ({ ...f, avg_amount_g: null, source: 'common' }))
+        : []
+      const allFoods = [...realCandidates, ...commonFoodsNorm]
 
       // Score each food — MACRO FIT is the primary metric, calories secondary
       const scored = allFoods
         .filter(food => food.kcal_per_100g > 0)
         .map(food => {
-          // Calculate amount to hit target kcal
-          const idealAmount = Math.min(500, Math.max(30, Math.round((targetKcal / food.kcal_per_100g) * 100)))
-          const amount = idealAmount
+          // Calculate amount to hit target kcal, but clamp to a REALISTIC portion when
+          // a real average/serving amount is known (history or library serving_size_g):
+          // [0.5x, 1.6x] of that real amount — a food normally eaten at ~150g must never
+          // be suggested at 500g just because the kcal math wants it (#873 premise). No
+          // known real amount (COMMON_FOODS fallback only) keeps the old [30,500] band.
+          const idealFromTarget = Math.round((targetKcal / food.kcal_per_100g) * 100)
+          const amount = food.avg_amount_g
+            ? Math.min(Math.round(food.avg_amount_g * 1.6), Math.max(Math.round(food.avg_amount_g * 0.5), idealFromTarget))
+            : Math.min(500, Math.max(30, idealFromTarget))
           const actualKcal = Math.round(food.kcal_per_100g * amount / 100)
           const actualProtein = Math.round(food.protein_per_100g * amount / 100 * 10) / 10
           const actualFat = Math.round(food.fat_per_100g * amount / 100 * 10) / 10
