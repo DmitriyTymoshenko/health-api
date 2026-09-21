@@ -18,12 +18,33 @@ const workoutsRoute = require('../../routes/workouts')
 function makeApp(opts: {
   exercises?: Array<Record<string, any>>
   workouts?: Array<Record<string, any>>
+  weightLog?: Array<Record<string, any>>
 }) {
   const exercises: Array<Record<string, any>> = opts.exercises || []
   const workouts: Array<Record<string, any>> = opts.workouts || []
+  const weightLog: Array<Record<string, any>> = opts.weightLog || []
 
   const db = {
     collection(name: string) {
+      // #1474: bodyweight-set autofill reads the latest weight_log entry on/before the
+      // session date. log-text's own parser always sets weight_input on every parsed
+      // set, so this is a no-op for this route today — stubbed so the shared helper
+      // (wired into all 3 write paths) doesn't throw "unexpected collection".
+      if (name === 'weight_log') {
+        return {
+          find: (filter: any = {}) => {
+            const maxDate = filter?.date?.$lte
+            const matched = weightLog.filter((w: any) => !maxDate || w.date <= maxDate)
+            return {
+              sort: () => ({
+                limit: () => ({
+                  toArray: async () => [...matched].sort((a: any, b: any) => (a.date < b.date ? 1 : -1)).slice(0, 1),
+                }),
+              }),
+            }
+          },
+        }
+      }
       if (name === 'exercises_library') {
         return {
           findOne: async (filter: any) => {

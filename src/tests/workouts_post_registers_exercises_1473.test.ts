@@ -18,12 +18,36 @@ const request = require('supertest')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const workoutsRoute = require('../../routes/workouts')
 
-function makeApp(opts: { exercises?: Array<Record<string, any>>; workouts?: Array<Record<string, any>> }) {
+function makeApp(opts: {
+  exercises?: Array<Record<string, any>>
+  workouts?: Array<Record<string, any>>
+  weightLog?: Array<Record<string, any>>
+}) {
   const exercises: Array<Record<string, any>> = opts.exercises || []
   const workouts: Array<Record<string, any>> = opts.workouts || []
+  const weightLog: Array<Record<string, any>> = opts.weightLog || []
 
   const db = {
     collection(name: string) {
+      // #1474: bodyweight-set autofill reads the latest weight_log entry on/before the
+      // session date, wired into POST / and PUT /:id alongside the #1473 registration
+      // below. Default empty -> resolveBodyweightForDate returns null (no measurement
+      // yet), matching this file's existing assertions (none of them inspect weight_kg).
+      if (name === 'weight_log') {
+        return {
+          find: (filter: any = {}) => {
+            const maxDate = filter?.date?.$lte
+            const matched = weightLog.filter((w: any) => !maxDate || w.date <= maxDate)
+            return {
+              sort: () => ({
+                limit: () => ({
+                  toArray: async () => [...matched].sort((a: any, b: any) => (a.date < b.date ? 1 : -1)).slice(0, 1),
+                }),
+              }),
+            }
+          },
+        }
+      }
       if (name === 'exercises_library') {
         return {
           findOne: async (filter: any) => {

@@ -83,6 +83,31 @@ describe('GET /api/workouts/volume-by-muscle', () => {
     })
   })
 
+  // #1474 acceptance (4): a home/bodyweight session whose sets carry `weight_kg` filled
+  // by the bodyweight-autofill (lib/bodyweight-fill.js, weight_source:'bodyweight') is
+  // included in the TOTAL exactly like a barbell session — summarizeVolumeByMuscle
+  // (lib/volume-by-muscle.js) sums weight_kg*reps and does not read weight_source at all,
+  // unlike hasPositiveWeight() (a DIFFERENT predicate, used for progression/ranking only).
+  it('includes a home workout whose bodyweight-autofilled sets carry weight_kg', async () => {
+    const app = makeApp({
+      exercises: [{ name: 'Планка (сек)', muscle_group: 'core' }],
+      workouts: [
+        { date: '2026-09-17', exercises: [
+          { name: 'Планка (сек)', sets: [
+            { reps: 60, weight_kg: 92.9, weight_source: 'bodyweight' },
+            { reps: 45, weight_kg: 92.9, weight_source: 'bodyweight' },
+          ] },
+        ] },
+      ],
+    })
+
+    const res = await request(app).get('/api/workouts/volume-by-muscle').query({ period: 'week', date: '2026-09-17' })
+    expect(res.status).toBe(200)
+    expect(res.body.workouts_count).toBe(1)
+    expect(res.body.total_kg).toBe(Math.round(92.9 * 60 + 92.9 * 45))
+    expect(res.body.groups).toEqual([{ muscle_group: 'core', volume_kg: Math.round(92.9 * 60 + 92.9 * 45), sets: 2, exercises_count: 1 }])
+  })
+
   it('returns empty month as 200 with groups:[]', async () => {
     const app = makeApp({ workouts: [], exercises: [] })
     const res = await request(app).get('/api/workouts/volume-by-muscle').query({ period: 'month', date: '2026-09-17' })

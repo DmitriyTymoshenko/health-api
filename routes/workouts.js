@@ -12,6 +12,7 @@ const {
   backfillWeightUnitInSession,
 } = require('../lib/workout-log-write')
 const { ensureExercisesInLibrary } = require('../lib/exercise-library-register')
+const { fillBodyweightSets, resolveBodyweightForDate } = require('../lib/bodyweight-fill')
 const { MUSCLE_GROUPS } = require('../lib/exercise-dictionaries')
 const {
   mergeLibraryFields,
@@ -694,6 +695,15 @@ module.exports = function (getDB) {
       if (!doc.source) doc.source = 'manual'
       doc.created_at = new Date()
 
+      // #1474: fill weight_kg for bodyweight sets (reps only, no weight_kg/weight_input)
+      // from the owner's latest weight_log entry on/before the session date — BEFORE
+      // library registration, so the library auto-create below sees the same doc that
+      // gets inserted. Never overwrites an explicit weight_kg/weight_input.
+      if (doc.exercises && doc.exercises.length > 0) {
+        const bodyweightKg = await resolveBodyweightForDate(db.collection('weight_log'), doc.date)
+        doc.exercises = fillBodyweightSets(doc.exercises, bodyweightKg).exercises
+      }
+
       // #1473: register/match every exercise in `exercises_library` regardless of
       // `source` — this route used to be one of two write paths (with PUT /:id below)
       // that skipped the library entirely, so a bodyweight session (no weight_kg on any
@@ -841,7 +851,15 @@ module.exports = function (getDB) {
       // needs_muscle_group_clarification instead of staying a silent null).
       const libCol = db.collection('exercises_library')
       const libByName = await ensureExercisesInLibrary(libCol, entries.map(e => e.name))
-      const newExercises = entries.map(entry => buildExerciseFromParsed(entry, libByName.get(entry.name)?.weight_unit ?? null))
+      let newExercises = entries.map(entry => buildExerciseFromParsed(entry, libByName.get(entry.name)?.weight_unit ?? null))
+
+      // #1474: same bodyweight autofill as POST / and PUT /:id — wired in for scope
+      // consistency across all three write paths. In practice this route's parser
+      // (parseWorkoutLogText) requires REPSxWEIGHT on every token, so `weight_input` is
+      // always set on a parsed set and this is a no-op today; kept so a future dictation
+      // format that allows a bare reps-only line doesn't silently skip autofill here.
+      const bodyweightKgForText = await resolveBodyweightForDate(db.collection('weight_log'), sessionDate)
+      newExercises = fillBodyweightSets(newExercises, bodyweightKgForText).exercises
 
       const workoutsCol = db.collection('workouts')
       const existing = await workoutsCol.findOne({ date: sessionDate, source: sessionSource })
@@ -893,6 +911,22 @@ module.exports = function (getDB) {
       const doc = req.body
       delete doc._id
       doc.updated_at = new Date()
+
+      // #1474: same bodyweight autofill as POST / above. An edit payload from the UI
+      // doesn't always resend `date` (it PATCHes only `exercises` in the common case) —
+      // fall back to the existing session's own date so the fill still resolves against
+      // the RIGHT day, not "no date at all -> null" (resolveBodyweightForDate treats a
+      // missing date as no-op, so a silent skip here would leave edited bodyweight sets
+      // unfilled forever).
+      if (doc.exercises && doc.exercises.length > 0) {
+        let sessionDate = doc.date
+        if (!sessionDate) {
+          const existing = await db.collection('workouts').findOne({ _id: new ObjectId(req.params.id) })
+          sessionDate = existing?.date
+        }
+        const bodyweightKg = await resolveBodyweightForDate(db.collection('weight_log'), sessionDate)
+        doc.exercises = fillBodyweightSets(doc.exercises, bodyweightKg).exercises
+      }
 
       // #1473: same registration as POST / above — an edit that adds/renames an
       // exercise must not leave it invisible to the library either.
