@@ -43,7 +43,7 @@ type Doc = Record<string, any>
  * collection name THROWS, so if the route later starts reading a fourth collection this
  * test fails loudly instead of silently returning undefined.
  */
-function makeGetDB(opts: { entries: Doc[]; profile: Doc | null; latestWeight: Doc | null }) {
+function makeGetDB(opts: { entries: Doc[]; profile: Doc | null; latestWeight: Doc | null; whoopCycles?: Doc[] }) {
   return () => ({
     collection(name: string) {
       if (name === 'nutrition_log') {
@@ -57,12 +57,27 @@ function makeGetDB(opts: { entries: Doc[]; profile: Doc | null; latestWeight: Do
       }
       if (name === 'personal_profile') return { findOne: async () => opts.profile }
       if (name === 'weight_log') return { findOne: async () => opts.latestWeight }
+      // #1099: summaryHandler now calls resolveDayTypeAwareKcalBasis, which reads
+      // whoop_cycles ONLY when the profile has no explicit daily_kcal_goal (every
+      // profile in THIS file sets one — see PROFILE below — so this branch is never
+      // actually hit here; it exists so the allowlist doesn't throw if that changes).
+      if (name === 'whoop_cycles') {
+        const cycles = opts.whoopCycles ?? []
+        return {
+          find: (filter: Doc = {}) => ({
+            toArray: async () => {
+              const { $gte, $lt } = filter.date || {}
+              return cycles.filter((c) => (!$gte || c.date >= $gte) && (!$lt || c.date < $lt))
+            },
+          }),
+        }
+      }
       throw new Error(`summaryHandler read an unexpected collection: ${name}`)
     },
   })
 }
 
-function makeApp(opts: { entries: Doc[]; profile: Doc | null; latestWeight: Doc | null }) {
+function makeApp(opts: { entries: Doc[]; profile: Doc | null; latestWeight: Doc | null; whoopCycles?: Doc[] }) {
   const app = express()
   app.use(express.json())
   app.use('/api/nutrition', nutritionRouter(makeGetDB(opts)))
@@ -193,5 +208,26 @@ describe('GET /api/nutrition/summary — route wiring of the sat_fat_* / sugar_*
     expect(res.body.sat_fat_goal_g).toBe(SAT_FAT_GOAL_G)
     expect(res.body.sugar_status).toBe('danger') // 60/50 = 120%
     expect(res.body.sat_fat_status).toBe('danger') // 25/22 = 114%
+  })
+
+  it('#1099: kcal_goal is day-type-aware when the profile has NO explicit daily_kcal_goal — a recurring high-burn weekday bumps it above the plain TDEE-deficit basis', async () => {
+    const WEDNESDAY = '2026-09-23'
+    const profileNoOverride: Doc = { _type: 'profile', tdee_kcal: 2701, deficit_kcal: 500, primary_goal: 'weight_loss', daily_kcal_goal: null }
+    // 6 same-weekday CLOSED analogs, one every 7 days back — clears MIN_ANALOG_DAYS (5).
+    const whoopCycles: Doc[] = []
+    for (let i = 1; i <= 6; i++) {
+      const [y, m, d] = WEDNESDAY.split('-').map(Number)
+      const date = new Date(Date.UTC(y, m - 1, d, 12, 0, 0))
+      date.setUTCDate(date.getUTCDate() - 7 * i)
+      whoopCycles.push({ date: date.toISOString().slice(0, 10), calories_burned: 2800, end: new Date() })
+    }
+
+    const app = makeApp({ profile: profileNoOverride, latestWeight: WEIGHT, entries: [], whoopCycles })
+    const res = await request(app).get('/api/nutrition/summary').query({ date: WEDNESDAY })
+
+    expect(res.status).toBe(200)
+    // stableDayKcalBasis(2701,500) = 2201; weekday analog 2800 - 500 = 2300 > 2201.
+    expect(res.body.kcal_goal).toBe(2300)
+    expect(res.body.kcal_goal).toBeGreaterThan(2201)
   })
 })

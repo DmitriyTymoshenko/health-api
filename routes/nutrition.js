@@ -21,6 +21,9 @@ const {
 // allowlist).
 const { deriveMacroRangesG } = require('../lib/targets-resolver')
 const { aggregateDay, macroContribution } = require('../lib/nutrition-aggregate')
+// #1099 — day-type-aware kcal basis (weekday-recurring analog), the ONLY thing
+// that now widens this route's collection footprint beyond the #1396 note above.
+const { resolveDayTypeAwareKcalBasis } = require('../lib/day-type-kcal')
 
 const TELEGRAM_BOT_TOKEN = '' // notifications disabled per user request
 const TELEGRAM_OWNER_ID = process.env.OWNER_TELEGRAM_ID || '455440443'
@@ -108,6 +111,11 @@ async function sendMealTelegramNotification(db, doc) {
     // water/today, profile/metrics) now shares this SAME stable basis via
     // lib/targets-resolver.js — this fire-and-forget digest already holds `profile` in
     // scope, so it calls stableDayKcalBasis directly instead of the full async resolver.
+    // #1099: this function is DEAD CODE (`TELEGRAM_BOT_TOKEN = ''` early-returns above,
+    // "notifications disabled per user request") so it was deliberately NOT migrated to
+    // the new day-type-aware `resolveDayTypeAwareKcalBasis` (lib/day-type-kcal.js) that
+    // every LIVE consumer (recommendations, nutrition/summary, targets, week) now uses —
+    // re-enabling this digest should swap this line to that resolver first.
     const kcalTarget = stableDayKcalBasis(profile)
 
     const kcalPct = Math.round((totals.kcal / kcalTarget) * 100)
@@ -235,7 +243,15 @@ module.exports = function (getDB) {
       // uses, so a limit can never drift between the two surfaces (BASE RULE).
       // Basis is the STABLE profile target, never the intraday WHOOP burn.
       const profile = await db.collection('personal_profile').findOne({ _type: 'profile' })
-      const kcalBasis = stableDayKcalBasis(profile)
+      // #1099: day-type-aware basis (weekday-recurring analog on top of the stable
+      // #1295 basis) — deliberately widens this route's DB footprint to include
+      // `whoop_cycles` (see lib/day-type-kcal.js), which #1396's comment above used
+      // to forbid; #1099's own acceptance criterion (ONE number per date across
+      // /api/recommendations, /api/nutrition/summary, /api/targets and /week)
+      // requires it. The query is skipped entirely when `daily_kcal_goal` is an
+      // explicit override (see resolveDayTypeAwareKcalBasis), so the common/no-bump
+      // path stays as cheap as before.
+      const kcalBasis = await resolveDayTypeAwareKcalBasis(db, profile, today)
       summary.kcal_goal = kcalBasis
       summary.deficit_kcal = resolveDeficitKcal(profile)
       summary.sat_fat_goal_g = satFatLimitG(kcalBasis)

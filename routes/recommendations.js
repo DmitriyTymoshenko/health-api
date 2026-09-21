@@ -15,6 +15,9 @@ const { resolveDayTargets } = require('../lib/targets-resolver')
 // #873 Частина 4: reuse the shared macroContribution (BASE RULE) for the two
 // flat-sum reduces below — they missed legacy nested items[] records (#862 class).
 const { macroContribution } = require('../lib/nutrition-aggregate')
+// #1099 — GET /week: Kyiv-day + date-arithmetic helpers, reused rather than a
+// third private copy (lib/volume-by-muscle.js already has one private pair).
+const { formatDateKyiv, addDaysToDateString } = require('../lib/training-program')
 
 // High-protein suggestions pool
 const HIGH_PROTEIN_POOL = [
@@ -63,6 +66,16 @@ const HIGH_GI_FOODS = ['рис', 'картопля', 'хліб', 'чіпси', '
 // Meal order for the day
 const MEAL_ORDER = ['breakfast', 'lunch', 'snack', 'dinner']
 
+// Shared meal-plan budget split — SAME shape used by both GET / (today, "remaining
+// meals of the day") and GET /week (#1099, full-day budgets for future days).
+const MEAL_PLAN_BUDGETS = {
+  breakfast: { cal_pct: 0.25, pro_pct: 0.25 },
+  lunch:     { cal_pct: 0.35, pro_pct: 0.35 },
+  snack:     { cal_pct: 0.15, pro_pct: 0.15 },
+  dinner:    { cal_pct: 0.25, pro_pct: 0.25 },
+}
+const MEAL_LABELS = { breakfast: 'Сніданок', lunch: 'Обід', snack: 'Перекус', dinner: 'Вечеря' }
+
 // Options database — concrete Ukrainian-relevant meals
 function getMealOptions(mealType, calBudget, proBudget, summary) {
   const allOptions = {
@@ -103,6 +116,47 @@ function getMealOptions(mealType, calBudget, proBudget, summary) {
     .map(({ diff, ...o }) => o)
 
   return options
+}
+
+/**
+ * THE single meal_plan generator — splits `calBudget`/`proBudget` across the meals
+ * NOT already in `loggedMealTypes`, proportionally to MEAL_PLAN_BUDGETS.
+ *
+ * Extracted for #1099 so GET /week uses the EXACT same generator as GET / (today),
+ * per that task's acceptance criterion — not a second hand-rolled copy. For GET /
+ * `loggedMealTypes` reflects what was actually eaten today (so only the REMAINING
+ * meals get planned); for GET /week's future days `loggedMealTypes` is always
+ * empty (no food can be logged for a day that hasn't happened) so all 4 meals get
+ * a full-day plan. Behaviour for GET / is byte-identical to the pre-#1099 inline
+ * block (same budgets, same rounding, same options lookup).
+ *
+ * @param {number} calBudget total calories to split across the unlogged meals
+ * @param {number} proBudget total protein (g) to split across the unlogged meals
+ * @param {Set<string>} loggedMealTypes meal types already logged (skipped)
+ * @returns {Array<object>} one entry per unlogged meal, in MEAL_ORDER
+ */
+function buildMealPlan(calBudget, proBudget, loggedMealTypes) {
+  const remainingMeals = MEAL_ORDER.filter(m => !loggedMealTypes.has(m))
+
+  const calTotalPct = remainingMeals.reduce((s, m) => s + MEAL_PLAN_BUDGETS[m].cal_pct, 0) || 1
+  const proTotalPct = remainingMeals.reduce((s, m) => s + MEAL_PLAN_BUDGETS[m].pro_pct, 0) || 1
+
+  const mealPlanSummary = {
+    calories_remaining: Math.round(calBudget),
+    protein_remaining: Math.round(proBudget),
+  }
+
+  return remainingMeals.map(mealType => {
+    const mealCalBudget = Math.round(calBudget * (MEAL_PLAN_BUDGETS[mealType].cal_pct / calTotalPct))
+    const mealProBudget = Math.round(proBudget * (MEAL_PLAN_BUDGETS[mealType].pro_pct / proTotalPct))
+
+    return {
+      meal_type: mealType,
+      label: MEAL_LABELS[mealType],
+      budget: { calories: mealCalBudget, protein: mealProBudget },
+      options: getMealOptions(mealType, mealCalBudget, mealProBudget, mealPlanSummary),
+    }
+  })
 }
 
 function getKyivHour() {
@@ -439,37 +493,10 @@ module.exports = function (getDB) {
         kyivHour
       )
 
-      // 10b. Build meal_plan for remaining meals of the day
+      // 10b. Build meal_plan for remaining meals of the day (#1099: shared generator,
+      // see buildMealPlan — also used by GET /week).
       const loggedMealTypes = new Set(nutritionEntries.map(e => e.meal_type))
-      const allMeals = ['breakfast', 'lunch', 'snack', 'dinner']
-      const remainingMeals = allMeals.filter(m => !loggedMealTypes.has(m))
-
-      const mealBudgets = {
-        breakfast: { cal_pct: 0.25, pro_pct: 0.25 },
-        lunch:     { cal_pct: 0.35, pro_pct: 0.35 },
-        snack:     { cal_pct: 0.15, pro_pct: 0.15 },
-        dinner:    { cal_pct: 0.25, pro_pct: 0.25 },
-      }
-
-      const remainingCalTotal = remainingMeals.reduce((s, m) => s + mealBudgets[m].cal_pct, 0) || 1
-      const remainingProTotal = remainingMeals.reduce((s, m) => s + mealBudgets[m].pro_pct, 0) || 1
-
-      const mealPlanSummary = {
-        calories_remaining: Math.round(remainingCalories),
-        protein_remaining: Math.round(remainingProtein),
-      }
-
-      const meal_plan = remainingMeals.map(mealType => {
-        const calBudget = Math.round(remainingCalories * (mealBudgets[mealType].cal_pct / remainingCalTotal))
-        const proBudget = Math.round(remainingProtein * (mealBudgets[mealType].pro_pct / remainingProTotal))
-
-        return {
-          meal_type: mealType,
-          label: { breakfast: 'Сніданок', lunch: 'Обід', snack: 'Перекус', dinner: 'Вечеря' }[mealType],
-          budget: { calories: calBudget, protein: proBudget },
-          options: getMealOptions(mealType, calBudget, proBudget, mealPlanSummary),
-        }
-      })
+      const meal_plan = buildMealPlan(remainingCalories, remainingProtein, loggedMealTypes)
 
       // 11. Build response
       const response = {
@@ -782,6 +809,97 @@ module.exports = function (getDB) {
       res.json(response)
     } catch (err) {
       console.error('Weekly recommendations error:', err)
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // GET /api/recommendations/week — 7 days AHEAD (today + next 6), #1099.
+  //
+  // This is the FORWARD complement to GET /weekly above (7 FULL days ending
+  // YESTERDAY, retrospective — "how did last week go"). This endpoint answers
+  // "what should I eat over the next 7 days" — Dmytro's original #1099 request.
+  // Past days are never included (that is what /weekly is for).
+  //
+  // Every day's kcal/macro targets come from THE single resolver
+  // (resolveDayTargets -> lib/targets-resolver.js -> lib/day-type-kcal.js), so a
+  // Wednesday here shows the SAME day-type-aware number GET / would show if
+  // today were that Wednesday — no second calorie-target computation exists in
+  // this file. `meal_plan` reuses buildMealPlan(), the SAME generator GET / uses.
+  router.get('/week', async (req, res) => {
+    try {
+      const db = getDB()
+      const startDate = req.query.date || formatDateKyiv(new Date())
+      const dates = Array.from({ length: 7 }, (_, i) => addDaysToDateString(startDate, i))
+
+      // Fetched ONCE (not per-day, profile does not vary by date) purely to expose
+      // `day_type_bumped` below — a UI-only signal so the frontend does not have to
+      // guess "was this bumped" from a hardcoded kcal threshold. resolveDayTargets()
+      // remains THE single source for the actual `calories_target` number.
+      const profileForBumpFlag = await db.collection('personal_profile').findOne({ _type: 'profile' })
+      const plainDerivedBasis = stableDayKcalBasis(profileForBumpFlag)
+
+      const days = await Promise.all(dates.map(async (date, i) => {
+        const isToday = i === 0
+        const targets = await resolveDayTargets(db, date)
+
+        // Only "today" can have anything actually logged/burned — a future date has
+        // no nutrition_log/whoop_cycles data by definition, so those reads are
+        // skipped entirely rather than issuing 6 pointless empty-result queries.
+        let consumed = { calories: 0, protein: 0, carbs: 0, fat: 0 }
+        let loggedMealTypes = new Set()
+        let whoopCaloriesBurned = null
+
+        if (isToday) {
+          const [nutritionEntries, whoopCycle] = await Promise.all([
+            db.collection('nutrition_log').find({ date }).toArray(),
+            db.collection('whoop_cycles').findOne({ date }),
+          ])
+          consumed = nutritionEntries.reduce((acc, entry) => {
+            const m = macroContribution(entry)
+            acc.calories += m.kcal
+            acc.protein += m.protein_g
+            acc.carbs += m.carbs_g
+            acc.fat += m.fat_g
+            return acc
+          }, { calories: 0, protein: 0, carbs: 0, fat: 0 })
+          loggedMealTypes = new Set(nutritionEntries.map(e => e.meal_type))
+          whoopCaloriesBurned = whoopCycle?.calories_burned || null
+        }
+
+        const remainingCalories = Math.max(0, targets.kcal - consumed.calories)
+        const remainingProtein = Math.max(0, targets.protein_g - consumed.protein)
+
+        return {
+          date,
+          is_today: isToday,
+          calories_target: targets.kcal,
+          // #1099 UI signal: true when the day-type analog actually raised the basis
+          // above the plain TDEE-deficit number (an explicit `daily_kcal_goal`
+          // override, or a weekday with too few analogs, means this is always false).
+          day_type_bumped: targets.kcal > plainDerivedBasis,
+          calories_consumed: Math.round(consumed.calories),
+          calories_remaining: Math.round(remainingCalories),
+          protein_target: targets.protein_g,
+          protein_goal_min_g: targets.protein_min_g,
+          protein_goal_max_g: targets.protein_max_g,
+          protein_consumed: Math.round(consumed.protein),
+          carbs_target: targets.carbs_g,
+          carbs_goal_min_g: targets.carbs_min_g,
+          carbs_goal_max_g: targets.carbs_max_g,
+          fat_target: targets.fat_g,
+          fat_goal_min_g: targets.fat_min_g,
+          fat_goal_max_g: targets.fat_max_g,
+          // #1099 acceptance: informational-only, like GET /'s own whoop_based —
+          // and ALWAYS false for a future day (there is no live cycle to read yet).
+          whoop_calories_burned: isToday ? whoopCaloriesBurned : null,
+          whoop_based: isToday ? !!whoopCaloriesBurned : false,
+          meal_plan: buildMealPlan(remainingCalories, remainingProtein, loggedMealTypes),
+        }
+      }))
+
+      res.json({ start_date: startDate, days })
+    } catch (err) {
+      console.error('Week recommendations error:', err)
       res.status(500).json({ error: err.message })
     }
   })
