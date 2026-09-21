@@ -81,7 +81,11 @@ describe('PATCH /api/workouts/exercises/:name (#1304)', () => {
     expect(docs.length).toBe(before) // no insert happened
   })
 
-  it('whitelist: name/muscle_group/equipment/_id in the body are ignored — route cannot rename an exercise', async () => {
+  it('#1472 regression: name/muscle_group/equipment/_id in the body now 400 the WHOLE request — no partial apply, no silent ignore', async () => {
+    // Before #1472 this whitelist silently dropped unknown keys and 200'd (the exact
+    // shape that misled Lisa 21.09: a bare `{name}` PATCH returned 200 with nothing
+    // renamed). Now ANY unknown key rejects the request outright — including when a
+    // valid field (`cues`) is mixed in, which must NOT get partially applied either.
     const { app, docs } = makeApp([PLANKA])
     const res = await request(app)
       .patch(`/api/workouts/exercises/${encodeURIComponent('Планка')}`)
@@ -93,13 +97,28 @@ describe('PATCH /api/workouts/exercises/:name (#1304)', () => {
         _id: '000000000000000000000000',
       })
 
-    expect(res.status).toBe(200)
-    expect(res.body.name).toBe('Планка') // unchanged — join key with #1290 plan preserved
-    expect(res.body.muscle_group).toBe('core')
-    expect(res.body.equipment).toBe('bodyweight')
-    expect(res.body._id).toBe('p1')
-    expect(res.body.cues).toEqual(['напруж прес']) // the one whitelisted field DID write
-    expect(docs[0].name).toBe('Планка')
+    expect(res.status).toBe(400)
+    expect(res.body.unknown_fields.sort()).toEqual(['_id', 'equipment', 'muscle_group', 'name'])
+    expect(docs[0]).toEqual(PLANKA) // untouched — not even `cues` was applied
+  })
+
+  it('#1472 regression: a bare {name} PATCH now 400s instead of silently ignoring it (this is what misled Lisa 21.09)', async () => {
+    const { app, docs } = makeApp([PLANKA])
+    const res = await request(app)
+      .patch(`/api/workouts/exercises/${encodeURIComponent('Планка')}`)
+      .send({ name: 'Планка (груди)' })
+
+    expect(res.status).toBe(400)
+    expect(res.body.unknown_fields).toEqual(['name'])
+    expect(docs[0].name).toBe('Планка') // untouched
+  })
+
+  it('#1472: an empty body 400s instead of a no-op 200', async () => {
+    const { app } = makeApp([PLANKA])
+    const res = await request(app)
+      .patch(`/api/workouts/exercises/${encodeURIComponent('Планка')}`)
+      .send({})
+    expect(res.status).toBe(400)
   })
 
   it('handles a Cyrillic name with spaces via a single encodeURIComponent (lesson #1286/#1290)', async () => {

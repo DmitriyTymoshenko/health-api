@@ -13,6 +13,12 @@ const {
 } = require('../lib/workout-log-write')
 const { MUSCLE_GROUPS } = require('../lib/exercise-dictionaries')
 const {
+  mergeLibraryFields,
+  consolidateSessionExercises,
+  replaceNameDedup,
+  renameInProgramDays,
+} = require('../lib/exercise-rename')
+const {
   periodBounds,
   summarizeVolumeByMuscle,
   exerciseNamesFromWorkouts,
@@ -180,12 +186,32 @@ module.exports = function (getDB) {
   // $set whitelist only. name/muscle_group/equipment/_id are never written here, so
   // this route is structurally unable to rename an exercise (the plan↔library link
   // key is the name, #1290) even if a caller passes those fields in the body.
+  //
+  // #1472: an unknown key (incl. `name` — rename lives at its own route below) used to
+  // be silently dropped by the whitelist, so a caller trying to rename via this route
+  // got a misleading 200 with nothing actually changed (Lisa hit this 21.09). Any key
+  // outside the whitelist now 400s the WHOLE request instead of partially applying it —
+  // same for an empty body, which previously $set an empty object and 200'd.
+  const PATCH_EXERCISE_WHITELIST = ['description_ua', 'video_url', 'image_url', 'cues']
   router.patch('/exercises/:name', async (req, res) => {
     try {
       const db = getDB()
       const name = req.params.name
-      const { description_ua, video_url, image_url, cues } = req.body
+      const body = req.body || {}
+      const bodyKeys = Object.keys(body)
+      if (bodyKeys.length === 0) {
+        return res.status(400).json({ error: 'request body must include at least one field' })
+      }
+      const unknown_fields = bodyKeys.filter(k => !PATCH_EXERCISE_WHITELIST.includes(k))
+      if (unknown_fields.length > 0) {
+        return res.status(400).json({
+          error: 'unknown field(s) in body — use PATCH /exercises/:name/name to rename, ' +
+            '/weight-unit or /muscle-group for those fields',
+          unknown_fields,
+        })
+      }
 
+      const { description_ua, video_url, image_url, cues } = body
       const update = {}
       if (description_ua !== undefined) update.description_ua = description_ua
       if (video_url !== undefined) update.video_url = video_url
@@ -200,6 +226,99 @@ module.exports = function (getDB) {
 
       const updated = await col.findOne({ name })
       res.json(updated)
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // PATCH /api/workouts/exercises/:name/name — #1472: rename/merge an exercise in the
+  // library. `:name` = source, body.name = target. If target doesn't exist yet, this is
+  // a plain rename of the library doc. If target ALREADY exists, this MERGES source into
+  // target (target's doc survives, source's doc is deleted; null fields on target get
+  // backfilled from source per lib/exercise-rename.js's NULL_FILLABLE_LIBRARY_FIELDS —
+  // muscle_group is deliberately excluded, a merge never guesses it).
+  //
+  // Backfills every name-keyed place source could appear: `workouts.exercises[].name`
+  // (consolidating sets into ONE entry when a session already logged both names under
+  // separate entries — every reader takes the FIRST `find` match by name, a leftover
+  // second entry would be silently invisible, see lib/exercise-rename.js header),
+  // `workouts.needs_muscle_group_clarification[]` / `needs_unit_clarification[]`
+  // (dedup on collapse), and `training_programs.days[].exercises[].name` (0 live matches
+  // today per Apex triage #1472 comment #8459, but the route stays generic).
+  router.patch('/exercises/:name/name', async (req, res) => {
+    try {
+      const db = getDB()
+      const source = req.params.name
+      const { name: target } = req.body || {}
+      if (typeof target !== 'string' || target.trim().length === 0) {
+        return res.status(400).json({ error: 'name (target) must be a non-empty string' })
+      }
+      if (target === source) {
+        return res.status(400).json({ error: 'target name must differ from the current name' })
+      }
+
+      const libCol = db.collection('exercises_library')
+      const sourceDoc = await libCol.findOne({ name: source })
+      if (!sourceDoc) {
+        return res.status(404).json({ error: 'Exercise not found', name: source })
+      }
+
+      const targetDoc = await libCol.findOne({ name: target })
+      const merged = !!targetDoc
+
+      let exercise
+      if (merged) {
+        const fill = mergeLibraryFields(targetDoc, sourceDoc)
+        fill.updated_at = new Date()
+        await libCol.updateOne({ name: target }, { $set: fill })
+        await libCol.deleteOne({ name: source })
+        exercise = await libCol.findOne({ name: target })
+      } else {
+        await libCol.updateOne({ name: source }, { $set: { name: target, updated_at: new Date() } })
+        exercise = await libCol.findOne({ name: target })
+      }
+
+      const workoutsCol = db.collection('workouts')
+      const sessions = await workoutsCol.find({ 'exercises.name': source }).toArray()
+
+      let renamedSessions = 0
+      let consolidatedSessions = 0
+      for (const session of sessions) {
+        const result = consolidateSessionExercises(session.exercises, source, target)
+        if (!result.changed) continue
+
+        const setDoc = { exercises: result.exercises, updated_at: new Date() }
+        if (Array.isArray(session.needs_muscle_group_clarification)) {
+          setDoc.needs_muscle_group_clarification =
+            replaceNameDedup(session.needs_muscle_group_clarification, source, target)
+        }
+        if (Array.isArray(session.needs_unit_clarification)) {
+          setDoc.needs_unit_clarification =
+            replaceNameDedup(session.needs_unit_clarification, source, target)
+        }
+        await workoutsCol.updateOne({ _id: session._id }, { $set: setDoc })
+
+        if (result.consolidated) consolidatedSessions += 1
+        else renamedSessions += 1
+      }
+
+      const programsCol = db.collection('training_programs')
+      const programs = await programsCol.find({ 'days.exercises.name': source }).toArray()
+      let updatedPrograms = 0
+      for (const program of programs) {
+        const { days, changed } = renameInProgramDays(program.days, source, target)
+        if (!changed) continue
+        await programsCol.updateOne({ _id: program._id }, { $set: { days, updated_at: new Date() } })
+        updatedPrograms += 1
+      }
+
+      res.json({
+        exercise,
+        merged,
+        renamed_sessions: renamedSessions,
+        consolidated_sessions: consolidatedSessions,
+        updated_programs: updatedPrograms,
+      })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
