@@ -11,6 +11,7 @@ const {
   exercisesNeedingMuscleGroup,
   backfillWeightUnitInSession,
 } = require('../lib/workout-log-write')
+const { ensureExercisesInLibrary } = require('../lib/exercise-library-register')
 const { MUSCLE_GROUPS } = require('../lib/exercise-dictionaries')
 const {
   mergeLibraryFields,
@@ -693,6 +694,14 @@ module.exports = function (getDB) {
       if (!doc.source) doc.source = 'manual'
       doc.created_at = new Date()
 
+      // #1473: register/match every exercise in `exercises_library` regardless of
+      // `source` — this route used to be one of two write paths (with PUT /:id below)
+      // that skipped the library entirely, so a bodyweight session (no weight_kg on any
+      // set) was invisible to PATCH /exercises/:name/muscle-group afterward.
+      if (doc.exercises && doc.exercises.length > 0) {
+        await ensureExercisesInLibrary(db.collection('exercises_library'), doc.exercises.map(ex => ex.name))
+      }
+
       // Calculate PRs BEFORE inserting to detect new records
       let newPRs = []
       if (doc.exercises && doc.exercises.length > 0) {
@@ -826,24 +835,13 @@ module.exports = function (getDB) {
         return res.status(400).json({ error: 'no parseable exercise lines found', skipped })
       }
 
+      // #1473: auto-create/match against `exercises_library` via the SAME shared helper
+      // now also used by POST / and PUT /:id — unit "не задано" (#1318 KROK 1: never
+      // guess) and muscle_group likewise never guessed (#1408, surfaced below via
+      // needs_muscle_group_clarification instead of staying a silent null).
       const libCol = db.collection('exercises_library')
-      const newExercises = []
-      const libByName = new Map()
-      for (const entry of entries) {
-        const escaped = entry.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-        let libDoc = await libCol.findOne({ name: { $regex: new RegExp(`^${escaped}$`, 'i') } })
-        if (!libDoc) {
-          // Auto-create a minimal library entry — unit "не задано" (#1318 KROK 1: never
-          // guess). KROK 2 fills weight_unit once the owner answers, this route never does.
-          // muscle_group is likewise never guessed (#1408) — surfaced below via
-          // needs_muscle_group_clarification instead of staying a silent null.
-          const created = { name: entry.name, muscle_group: null, equipment: null, weight_unit: null, created_at: new Date() }
-          const insertResult = await libCol.insertOne(created)
-          libDoc = { ...created, _id: insertResult.insertedId }
-        }
-        libByName.set(entry.name, libDoc)
-        newExercises.push(buildExerciseFromParsed(entry, libDoc.weight_unit ?? null))
-      }
+      const libByName = await ensureExercisesInLibrary(libCol, entries.map(e => e.name))
+      const newExercises = entries.map(entry => buildExerciseFromParsed(entry, libByName.get(entry.name)?.weight_unit ?? null))
 
       const workoutsCol = db.collection('workouts')
       const existing = await workoutsCol.findOne({ date: sessionDate, source: sessionSource })
@@ -895,6 +893,12 @@ module.exports = function (getDB) {
       const doc = req.body
       delete doc._id
       doc.updated_at = new Date()
+
+      // #1473: same registration as POST / above — an edit that adds/renames an
+      // exercise must not leave it invisible to the library either.
+      if (doc.exercises && doc.exercises.length > 0) {
+        await ensureExercisesInLibrary(db.collection('exercises_library'), doc.exercises.map(ex => ex.name))
+      }
 
       const result = await db.collection('workouts').findOneAndUpdate(
         { _id: new ObjectId(req.params.id) },
