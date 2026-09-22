@@ -19,6 +19,8 @@ const impl = require('../../lib/validate') as {
   validateDate: (req: Request, res: Response, next: NextFunction) => void
   normalizeNutrition: (req: Request, res: Response, next: NextFunction) => void
   normalizeSupplementId: (req: Request, res: Response, next: NextFunction) => void
+  validateKnowledgeCycleInvariant: (body: Record<string, unknown> | undefined) => string | null
+  validateSupplementKnowledgeCycle: (req: Request, res: Response, next: NextFunction) => void
 }
 
 export const requireFields = impl.requireFields
@@ -26,3 +28,8 @@ export const requireAnyField = impl.requireAnyField
 export const validateDate = impl.validateDate
 export const normalizeNutrition = impl.normalizeNutrition
 export const normalizeSupplementId = impl.normalizeSupplementId
+// #1487 (stage B of #1485, design D4): same re-export pattern as everything
+// else in this file — canonical impl in lib/validate.js, this is just the
+// typed surface for TS test files.
+export const validateKnowledgeCycleInvariant = impl.validateKnowledgeCycleInvariant
+export const validateSupplementKnowledgeCycle = impl.validateSupplementKnowledgeCycle

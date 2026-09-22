@@ -1,4 +1,8 @@
 const { Router } = require('express')
+const { validateSupplementKnowledgeCycle, validateKnowledgeCycleInvariant } = require('../lib/validate')
+const { ensureAutoCycleForSupplement } = require('../lib/supplement-autocycle')
+const { cycleStatus, cycleWindow } = require('../lib/cycle-status')
+const { formatDateKyiv } = require('../lib/training-program')
 
 // supplement_intake: retained read-only (84 docs, last write 2026-06-29); drop = owner decision (Level 3), #1485
 
@@ -53,31 +57,94 @@ module.exports = function (getDB) {
   })
 
   // POST /api/catalog
+  // #1487 (stage B of #1485, design D6): an optional `knowledge` object in
+  // the body ({continuous, cycle, purchase_url, purchase_note, source}) gets
+  // upserted into supplement_knowledge for the new catalog id, and — when
+  // `knowledge.cycle` is non-null — an auto-cycle is created starting today
+  // (Kyiv). Response shape: {item, knowledge, cycle, cycle_error?}. When the
+  // request has no `knowledge` at all (every pre-#1487 caller), `knowledge`
+  // and `cycle` are both `null` in the response — a purely additive change,
+  // no existing caller reads this route's response body (grepped: the
+  // dashboard's `addOrReactivateSupplement` fires the POST and never awaits
+  // `.json()` on it).
   router.post('/', async (req, res) => {
     try {
       const db = getDB()
+      const { knowledge: knowledgeInput, ...itemBody } = req.body
       const lastItem = await db.collection('supplement_catalog').findOne({}, { sort: { id: -1 } })
       const newId = (lastItem?.id || 0) + 1
-      const doc = { ...req.body, id: newId, active: true }
+      const doc = { ...itemBody, id: newId, active: true }
       await db.collection('supplement_catalog').insertOne(doc)
-      res.status(201).json(doc)
+
+      let knowledge = null
+      let cycle = null
+      let cycle_error = null
+      if (knowledgeInput) {
+        const invariantError = validateKnowledgeCycleInvariant(knowledgeInput)
+        if (invariantError) {
+          // Item is already created — do not roll it back over an optional
+          // knowledge block being malformed; report the error alongside.
+          return res.status(201).json({ item: doc, knowledge: null, cycle: null, cycle_error: invariantError })
+        }
+        const knowledgeDoc = { ...knowledgeInput, catalog_id: newId }
+        knowledge = await db.collection('supplement_knowledge').findOneAndUpdate(
+          { catalog_id: newId },
+          { $set: knowledgeDoc },
+          { returnDocument: 'after', upsert: true }
+        )
+        const autoCycle = await ensureAutoCycleForSupplement(db, newId, doc.name, knowledgeInput)
+        cycle = autoCycle.cycle
+        cycle_error = autoCycle.cycle_error
+      }
+
+      const responseBody = { item: doc, knowledge, cycle }
+      if (cycle_error) responseBody.cycle_error = cycle_error
+      res.status(201).json(responseBody)
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
   })
 
   // PUT /api/catalog/:id
+  // #1487 (stage B of #1485, design D6): reactivating an archived item
+  // (active:false -> active:true — #1427's own write path from the dashboard's
+  // "▶ Повернути" button) creates a NEW auto-cycle from today, mirroring what
+  // POST does for a brand-new item, IF the supplement's knowledge doc has a
+  // cycle. A plain edit (any other field change, or active already true/false
+  // unchanged) never touches cycles. Dedupe (same supplement_id + same day) is
+  // handled by ensureAutoCycleForSupplement itself — a double-click reactivate
+  // never creates two auto-cycles for one day.
   router.put('/:id', async (req, res) => {
     try {
       const db = getDB()
       const id = Number(req.params.id)
       const { _id, ...updates } = req.body
+
+      const before = await db.collection('supplement_catalog').findOne({ id })
       const result = await db.collection('supplement_catalog').findOneAndUpdate(
         { id },
         { $set: updates },
         { returnDocument: 'after' }
       )
       if (!result) return res.status(404).json({ error: 'Not found' })
+
+      const isReactivation = before && before.active === false && updates.active === true
+      let cycle = null
+      let cycle_error = null
+      if (isReactivation) {
+        const knowledge = await db.collection('supplement_knowledge').findOne({ catalog_id: id })
+        if (knowledge && knowledge.cycle) {
+          const autoCycle = await ensureAutoCycleForSupplement(db, id, result.name, knowledge)
+          cycle = autoCycle.cycle
+          cycle_error = autoCycle.cycle_error
+        }
+      }
+
+      if (isReactivation) {
+        const responseBody = { ...result, cycle }
+        if (cycle_error) responseBody.cycle_error = cycle_error
+        return res.json(responseBody)
+      }
       res.json(result)
     } catch (err) {
       res.status(500).json({ error: err.message })
@@ -97,12 +164,24 @@ module.exports = function (getDB) {
   })
 
   // GET /api/catalog/cycles
+  // #1487 (stage B of #1485, design D7): every cycle gets computed_status +
+  // active_end + pause_end via lib/cycle-status.js (server-side parity port
+  // of the dashboard's own cycleStatus() util — see that file's header for
+  // why this is a deliberate duplicate, not a shared import). The dashboard
+  // is NOT required to read these fields — it keeps computing its own `st`
+  // client-side (#1412/#1420 tests unchanged) — these exist for
+  // lib/cycle-notify.js and any future non-dashboard consumer.
   router.get('/cycles', async (req, res) => {
     try {
       const db = getDB()
       await ensureSeed(db)
       const data = await db.collection('supplement_cycles').find({}).sort({ start_date: -1 }).toArray()
-      res.json(data)
+      const enriched = data.map(c => ({
+        ...c,
+        computed_status: cycleStatus(c),
+        ...cycleWindow(c),
+      }))
+      res.json(enriched)
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -147,6 +226,46 @@ module.exports = function (getDB) {
       const id = Number(req.params.id)
       await db.collection('supplement_cycles').deleteOne({ id })
       res.json({ ok: true })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // POST /api/catalog/cycles/:id/restart
+  // #1487 (stage B of #1485, design D7): the old cycle is marked
+  // status:'completed' (a manual override — it stays "Завершено" forever,
+  // never reverts to a date-derived status) and a BRAND NEW cycle is created
+  // starting today (Kyiv), same duration/pause as the old one UNLESS the
+  // supplement's current knowledge.cycle disagrees — knowledge wins, because
+  // it reflects the latest Koliada/owner-confirmed guidance, while the old
+  // cycle doc may be stale (e.g. created before a knowledge correction).
+  router.post('/cycles/:id/restart', async (req, res) => {
+    try {
+      const db = getDB()
+      const id = Number(req.params.id)
+      const oldCycle = await db.collection('supplement_cycles').findOne({ id })
+      if (!oldCycle) return res.status(404).json({ error: 'Not found' })
+
+      await db.collection('supplement_cycles').updateOne({ id }, { $set: { status: 'completed' } })
+
+      const knowledge = await db.collection('supplement_knowledge').findOne({ catalog_id: oldCycle.supplement_id })
+      const durationWeeks = knowledge?.cycle?.duration_weeks ?? oldCycle.duration_weeks
+      const pauseWeeks = knowledge?.cycle?.pause_weeks ?? oldCycle.pause_weeks ?? 0
+
+      const lastItem = await db.collection('supplement_cycles').findOne({}, { sort: { id: -1 } })
+      const newId = (lastItem?.id || 0) + 1
+      const newCycle = {
+        supplement_id: oldCycle.supplement_id,
+        supplement_name: oldCycle.supplement_name,
+        start_date: formatDateKyiv(new Date()),
+        duration_weeks: durationWeeks,
+        pause_weeks: pauseWeeks,
+        status: 'active',
+        created_by: 'restart',
+        id: newId,
+      }
+      await db.collection('supplement_cycles').insertOne(newCycle)
+      res.status(201).json({ old_cycle_id: id, cycle: newCycle })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -204,7 +323,9 @@ module.exports = function (getDB) {
   })
 
   // PUT /api/catalog/knowledge/:catalog_id — update knowledge entry
-  router.put('/knowledge/:id', async (req, res) => {
+  // #1487 (stage B of #1485, design D3/B3): validateSupplementKnowledgeCycle
+  // rejects a continuous/cycle contradiction BEFORE the upsert.
+  router.put('/knowledge/:id', validateSupplementKnowledgeCycle, async (req, res) => {
     try {
       const db = getDB()
       const id = Number(req.params.id)

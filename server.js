@@ -4,6 +4,7 @@ const fs = require('fs')
 const path = require('path')
 
 const pkg = require('./package.json')
+const { checkCycleEndsAndNotify } = require('./lib/cycle-notify')
 
 const app = express()
 const PORT = process.env.HEALTH_API_TEST_PORT || 3001
@@ -365,6 +366,18 @@ if (require.main === module) {
       app.listen(PORT, '127.0.0.1', () => {
         console.log(`Health API running on http://127.0.0.1:${PORT}`)
       })
+
+      // #1487 (stage B of #1485, D8): Lisa reminder when a supplement cycle
+      // crosses into pause/completed. First run 30s after startup (let the
+      // Mongo connection settle), then every 60 minutes. Idempotent via the
+      // end_notified flags in lib/cycle-notify.js — a restart mid-interval
+      // just re-checks the same cycles, never double-sends.
+      setTimeout(() => {
+        checkCycleEndsAndNotify(getDB()).catch(err => console.error('[cycle-notify] initial run failed:', err.message))
+        setInterval(() => {
+          checkCycleEndsAndNotify(getDB()).catch(err => console.error('[cycle-notify] interval run failed:', err.message))
+        }, 60 * 60 * 1000)
+      }, 30 * 1000)
     })
     .catch((err) => {
       console.error('Failed to connect to MongoDB:', err)

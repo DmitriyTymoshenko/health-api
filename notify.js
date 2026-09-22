@@ -10,11 +10,21 @@ const DEFAULT_CALORIE_LIMIT = 2200
 const DEFICIT_GOAL = 500
 const WARN_THRESHOLD = 0.80
 
+// #1487 (stage B of #1485, design D8): resolves `true`/`false` per the HTTP
+// status of the Telegram API response, so a caller that needs to know
+// "did the message actually go out" (lib/cycle-notify.js — a flag must only
+// be written AFTER a confirmed send, or a failed send silently looks
+// delivered forever) can gate on it. `checkAndNotify`/`checkWaterAndNotify`
+// below already call this fire-and-forget and never inspected the resolved
+// value — this change is additive to the resolved value only, no call-site
+// here changes, and `water-notify.test.ts` never touches `sendTelegram`
+// directly (grepped before changing this — only pure functions from this
+// file are imported there: calcWaterGoal/strainLabel/expectedPctByHour).
 function sendTelegram(text) {
   return new Promise((resolve) => {
     if (!BOT_TOKEN || !CHAT_ID) {
       console.warn('[notify] TELEGRAM_BOT_LISA/OWNER_TELEGRAM_ID missing — alert skipped')
-      return resolve()
+      return resolve(false)
     }
     const body = JSON.stringify({ chat_id: CHAT_ID, text, parse_mode: 'HTML' })
     const req = https.request({
@@ -22,8 +32,12 @@ function sendTelegram(text) {
       path: `/bot${BOT_TOKEN}/sendMessage`,
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
-    }, res => { res.on('data', () => {}); res.on('end', resolve) })
-    req.on('error', resolve)
+    }, res => {
+      let ok = res.statusCode >= 200 && res.statusCode < 300
+      res.on('data', () => {})
+      res.on('end', () => resolve(ok))
+    })
+    req.on('error', () => resolve(false))
     req.write(body)
     req.end()
   })
@@ -188,4 +202,4 @@ async function checkWaterAndNotify(db, date) {
   } catch (e) {}
 }
 
-module.exports = { checkAndNotify, checkWaterAndNotify, calcWaterGoal, calcWaterGoalWithContext: getWhoopWaterContext, strainLabel, expectedPctByHour, kyivHour }
+module.exports = { checkAndNotify, checkWaterAndNotify, calcWaterGoal, calcWaterGoalWithContext: getWhoopWaterContext, strainLabel, expectedPctByHour, kyivHour, sendTelegram }

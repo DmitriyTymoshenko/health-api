@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express'
-import { normalizeNutrition, requireFields, validateDate, normalizeSupplementId } from '../middleware/validate'
+import { normalizeNutrition, requireFields, validateDate, normalizeSupplementId, validateSupplementKnowledgeCycle } from '../middleware/validate'
 
 function mockReqRes(body: Record<string, unknown> = {}, query: Record<string, unknown> = {}) {
   const req = { body: { ...body }, query: { ...query } } as unknown as Request
@@ -116,5 +116,49 @@ describe('normalizeSupplementId', () => {
     const { req, res, next } = mockReqRes({ supplement_id: 3 })
     normalizeSupplementId(req, res, next)
     expect(req.body.supplement_id).toBe(3)
+  })
+})
+
+// #1487 (stage B of #1485, design D4/B3): continuous/cycle invariant on
+// supplement_knowledge documents.
+describe('validateSupplementKnowledgeCycle', () => {
+  it('400s when continuous:true is paired with a non-null cycle', () => {
+    const { req, res, next } = mockReqRes({ continuous: true, cycle: { duration_weeks: 8, pause_weeks: 4 } })
+    validateSupplementKnowledgeCycle(req, res, next)
+    expect(res.status).toHaveBeenCalledWith(400)
+    expect(next).not.toHaveBeenCalled()
+  })
+
+  it('400s when continuous:false is paired with cycle:null', () => {
+    const { req, res, next } = mockReqRes({ continuous: false, cycle: null })
+    validateSupplementKnowledgeCycle(req, res, next)
+    expect(res.status).toHaveBeenCalledWith(400)
+    expect(next).not.toHaveBeenCalled()
+  })
+
+  it('400s when continuous:false is paired with an invalid cycle (duration_weeks < 1)', () => {
+    const { req, res, next } = mockReqRes({ continuous: false, cycle: { duration_weeks: 0, pause_weeks: 4 } })
+    validateSupplementKnowledgeCycle(req, res, next)
+    expect(res.status).toHaveBeenCalledWith(400)
+  })
+
+  it('passes when continuous:true, cycle:null', () => {
+    const { req, res, next } = mockReqRes({ continuous: true, cycle: null })
+    validateSupplementKnowledgeCycle(req, res, next)
+    expect(next).toHaveBeenCalled()
+    expect(res.status).not.toHaveBeenCalled()
+  })
+
+  it('passes when continuous:false with a valid cycle object', () => {
+    const { req, res, next } = mockReqRes({ continuous: false, cycle: { duration_weeks: 8, pause_weeks: 4 } })
+    validateSupplementKnowledgeCycle(req, res, next)
+    expect(next).toHaveBeenCalled()
+  })
+
+  it('passes through untouched when the body does not mention continuous/cycle at all (e.g. purchase_url-only PUT)', () => {
+    const { req, res, next } = mockReqRes({ purchase_url: 'https://examine.com/x' })
+    validateSupplementKnowledgeCycle(req, res, next)
+    expect(next).toHaveBeenCalled()
+    expect(res.status).not.toHaveBeenCalled()
   })
 })
