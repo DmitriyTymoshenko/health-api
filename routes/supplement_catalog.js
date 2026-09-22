@@ -3,6 +3,17 @@ const { validateSupplementKnowledgeCycle, validateKnowledgeCycleInvariant } = re
 const { ensureAutoCycleForSupplement } = require('../lib/supplement-autocycle')
 const { cycleStatus, cycleWindow } = require('../lib/cycle-status')
 const { formatDateKyiv } = require('../lib/training-program')
+const { loadCorpus } = require('../lib/koliada-corpus')
+const { callGemini, GEMINI_MODEL } = require('../lib/gemini-text')
+const { fetchLatestLabs } = require('../lib/labs-latest')
+const { RECS_RESPONSE_SCHEMA, buildRecsPrompt, toRawCandidate } = require('../lib/recs-generate')
+const { postprocessRecommendations } = require('../lib/recs-postprocess')
+
+// #1488 (stage C of #1485): manual refresh cap for GET /catalog/recommendations
+// /refresh — env-overridable with a hardcoded default (no new drop-in needed,
+// same rule as GEMINI_TEXT_MODEL in lib/gemini-text.js — a pure code default
+// needs no systemd unit file).
+const RECS_REFRESH_CAP = Math.max(1, Number(process.env.RECS_REFRESH_CAP) || 5)
 
 // supplement_intake: retained read-only (84 docs, last write 2026-06-29); drop = owner decision (Level 3), #1485
 
@@ -336,6 +347,110 @@ module.exports = function (getDB) {
         { returnDocument: 'after', upsert: true }
       )
       res.json(result)
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // #1488 (stage C of #1485): LLM-generated recommendations. Gathers the
+  // active stack + knowledge + fresh labs + recent WHOOP + the Koliada
+  // corpus, calls Gemini, then runs the result through
+  // lib/recs-postprocess.js (Rule 6: any failure below — no API key, empty
+  // corpus, a Gemini error, unparseable JSON — degrades to 200 with
+  // `recommendations:[]` + `errors:[...]`, never a 500, and the doc is NOT
+  // cached on error so the next GET retries instead of freezing a failure).
+  async function generateRecommendationsPayload(db) {
+    const [activeStack, knowledgeDocs, latestLabs, whoopDocs] = await Promise.all([
+      db.collection('supplement_catalog').find({ active: { $ne: false } }).toArray(),
+      db.collection('supplement_knowledge').find({}).toArray(),
+      fetchLatestLabs(db),
+      db.collection('daily_metrics').find({}).sort({ date: -1 }).limit(1).toArray(),
+    ])
+    const knowledgeByCatalogId = new Map(knowledgeDocs.map(k => [k.catalog_id, k]))
+    const whoopLatest = whoopDocs[0] || null
+
+    const { text: corpusText } = loadCorpus()
+    const apiKey = process.env.GOOGLE_AI_API_KEY
+
+    if (!apiKey) {
+      return { recommendations: [], warnings: [], errors: ['GOOGLE_AI_API_KEY not configured'], model: null, usage: null }
+    }
+    if (!corpusText) {
+      return { recommendations: [], warnings: [], errors: ['Koliada corpus unavailable (vault dir not found)'], model: null, usage: null }
+    }
+
+    const prompt = buildRecsPrompt({ activeStack, knowledgeByCatalogId, latestLabs, whoopLatest, corpusText })
+
+    let json, usage
+    try {
+      ({ json, usage } = await callGemini({ apiKey, prompt, schema: RECS_RESPONSE_SCHEMA }))
+    } catch (err) {
+      console.error('[recommendations] Gemini call failed:', err.message)
+      return { recommendations: [], warnings: [], errors: [err.message], model: GEMINI_MODEL, usage: null }
+    }
+    if (!json || !Array.isArray(json.items)) {
+      return { recommendations: [], warnings: [], errors: ['Gemini returned no parseable recommendations'], model: GEMINI_MODEL, usage }
+    }
+
+    const rawCandidates = json.items.map(item => toRawCandidate(item, latestLabs))
+    const { recommendations, warnings } = postprocessRecommendations(rawCandidates, { activeStack, knowledgeByCatalogId, corpusText })
+
+    return { recommendations, warnings, errors: [], model: GEMINI_MODEL, usage }
+  }
+
+  async function saveRecommendationsCache(db, todayStr, result, refreshCount) {
+    const payload = {
+      date: todayStr,
+      generated_at: new Date().toISOString(),
+      model: result.model,
+      refresh_count: refreshCount,
+      recommendations: result.recommendations,
+      warnings: result.warnings,
+      errors: result.errors,
+    }
+    // Rule 6: never cache a failed generation — the next GET must retry, not
+    // serve a frozen empty-with-errors doc for the rest of the day.
+    if (result.errors.length === 0) {
+      await db.collection('supplement_recommendations').updateOne(
+        { date: todayStr },
+        { $set: { date: todayStr, generated_at: payload.generated_at, model: result.model, payload, refresh_count: refreshCount } },
+        { upsert: true }
+      )
+    }
+    return payload
+  }
+
+  // GET /api/catalog/recommendations — generates once per Kyiv day, cached.
+  router.get('/recommendations', async (req, res) => {
+    try {
+      const db = getDB()
+      const todayStr = formatDateKyiv(new Date())
+      const cached = await db.collection('supplement_recommendations').findOne({ date: todayStr })
+      if (cached) return res.json(cached.payload)
+
+      const result = await generateRecommendationsPayload(db)
+      const payload = await saveRecommendationsCache(db, todayStr, result, 0)
+      res.json(payload)
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // POST /api/catalog/recommendations/refresh — manual regenerate, capped
+  // per Kyiv day. The FIRST generation (via the GET above, refresh_count:0)
+  // does not consume this budget — only explicit refresh calls do.
+  router.post('/recommendations/refresh', async (req, res) => {
+    try {
+      const db = getDB()
+      const todayStr = formatDateKyiv(new Date())
+      const existing = await db.collection('supplement_recommendations').findOne({ date: todayStr })
+      const currentCount = existing?.refresh_count || 0
+      if (currentCount >= RECS_REFRESH_CAP) {
+        return res.status(429).json({ error: `Refresh limit reached for today (${RECS_REFRESH_CAP})` })
+      }
+      const result = await generateRecommendationsPayload(db)
+      const payload = await saveRecommendationsCache(db, todayStr, result, currentCount + 1)
+      res.json(payload)
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
