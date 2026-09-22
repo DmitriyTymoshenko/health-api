@@ -1,0 +1,329 @@
+[
+  {
+    "catalog_id": 1,
+    "continuous": true,
+    "cycle": null,
+    "continuous_source": {
+      "kind": "confirms",
+      "by": "koliada",
+      "ref": "Lesson 58-63 (Vitamin D section, Koliada Part 2)",
+      "quote": "nervous system support (the brain is a notably fat-rich organ, and fat-soluble vitamin D operates comfortably there); immune system stimulation; cardiovascular and metabolic regulation."
+    },
+    "active_ingredients": [
+      { "name": "Vitamin D3", "nutrient_key": "vitamin_d", "amount_per_dose": 2000, "unit": "IU" }
+    ],
+    "interactions": [
+      {
+        "with": "omega3_epa_dha",
+        "kind": "synergy",
+        "rule": "take together (fat-soluble vitamin, absorbs better with dietary fat)",
+        "source": {
+          "kind": "confirms",
+          "by": "koliada",
+          "ref": "Lesson 1-38 (Fats: Structure and Functions section, Koliada Part 1)",
+          "quote": "vitamins A, D, E, K require dietary fat present in the SAME meal to be efficiently extracted/absorbed"
+        }
+      },
+      {
+        "with": "magnesium_supplemental",
+        "kind": "synergy",
+        "rule": "take together (magnesium is a required cofactor for vitamin D activation/metabolism)",
+        "source": { "kind": "confirms", "by": "external", "ref": "https://pubmed.ncbi.nlm.nih.gov/26773013/" }
+      }
+    ],
+    "purchase_url": "https://gymbeam.com/vitamin-d3-2000-iu-gymbeam.html",
+    "purchase_note": null
+  },
+  {
+    "catalog_id": 2,
+    "continuous": true,
+    "cycle": null,
+    "continuous_source": {
+      "kind": "confirms",
+      "by": "koliada",
+      "ref": "Lesson 1-38 (Fats: Omega-3/Omega-6 section, Koliada Part 1)",
+      "quote": "2+ servings/week of fatty fish reliably covers omega-3 needs"
+    },
+    "active_ingredients": [
+      { "name": "Fish oil", "nutrient_key": "fish_oil", "amount_per_dose": 2000, "unit": "mg" },
+      { "name": "EPA+DHA", "nutrient_key": "omega3_epa_dha", "amount_per_dose": 600, "unit": "mg" }
+    ],
+    "interactions": [
+      {
+        "with": "vitamin_d",
+        "kind": "synergy",
+        "rule": "take together (fat-soluble vitamin, absorbs better with dietary fat)",
+        "source": {
+          "kind": "confirms",
+          "by": "koliada",
+          "ref": "Lesson 1-38 (Fats: Structure and Functions section, Koliada Part 1)",
+          "quote": "vitamins A, D, E, K require dietary fat present in the SAME meal to be efficiently extracted/absorbed"
+        }
+      }
+    ],
+    "purchase_url": "https://gymbeam.com/omega-3-gymbeam.html",
+    "purchase_note": null
+  },
+  {
+    "catalog_id": 3,
+    "continuous": true,
+    "cycle": null,
+    "continuous_source": {
+      "kind": "confirms",
+      "by": "koliada",
+      "ref": "Lesson 111-147 (Training Protocols / Sports supplements, Koliada Part 4)",
+      "quote": "creatine monohydrate (a few g up to ~10 g/day), HMB, beta-alanine (a buffer), caffeine, sodium bicarbonate/phosphate, essential amino acids (only if the diet is protein-deficient)"
+    },
+    "active_ingredients": [
+      { "name": "Creatine HCl", "nutrient_key": "creatine", "amount_per_dose": 3000, "unit": "mg" }
+    ],
+    "interactions": [
+      {
+        "with": "caffeine",
+        "kind": "neutral",
+        "rule": "no established negative interference on creatine's ergogenic effect — safe to combine",
+        "source": { "kind": "neutral", "by": "external", "ref": "https://pubmed.ncbi.nlm.nih.gov/35016154/" }
+      }
+    ],
+    "purchase_url": "https://amixnutrition.co.uk/products/creatine-hcl",
+    "purchase_note": "Owner runs a personal 8-week-on/4-week-off cycle (supplement_cycles #1) — this is an owner CHOICE, not a science-based requirement; examine.com/ISSN consensus (Kreider et al. 2017, PMID 28615996) and the Koliada corpus both list creatine among proven-efficacy supplements with no cycling requirement. The cycle document (supplement_cycles) is left untouched per task scope."
+  },
+  {
+    "catalog_id": 4,
+    "continuous": true,
+    "cycle": null,
+    "continuous_source": {
+      "kind": "confirms",
+      "by": "koliada",
+      "ref": "Lesson 58-63 (Vitamins General Principles, Koliada Part 2)",
+      "quote": "Multivitamin manufacturers manage this with slight overdosing and physical layering/separation within the pill, not exclusion."
+    },
+    "active_ingredients": [
+      { "name": "Vitamin B1", "nutrient_key": "vitamin_b1", "amount_per_dose": null, "unit": "mg", "note": "RDA" },
+      { "name": "Vitamin B2", "nutrient_key": "vitamin_b2", "amount_per_dose": null, "unit": "mg", "note": "RDA" },
+      { "name": "Vitamin B3", "nutrient_key": "niacin", "amount_per_dose": null, "unit": "mg", "note": "RDA" },
+      { "name": "Vitamin B5", "nutrient_key": "vitamin_b5", "amount_per_dose": null, "unit": "mg", "note": "RDA" },
+      { "name": "Vitamin B6", "nutrient_key": "vitamin_b6", "amount_per_dose": null, "unit": "mg", "note": "RDA" },
+      { "name": "Vitamin B7 (Biotin)", "nutrient_key": "biotin", "amount_per_dose": null, "unit": "mcg", "note": "RDA" },
+      { "name": "Vitamin B9 (Folic acid)", "nutrient_key": "folate_supplemental", "amount_per_dose": null, "unit": "mcg", "note": "RDA" },
+      { "name": "Vitamin B12", "nutrient_key": "vitamin_b12", "amount_per_dose": null, "unit": "mcg", "note": "RDA" },
+      { "name": "Vitamin C", "nutrient_key": "vitamin_c", "amount_per_dose": 80, "unit": "mg", "note": "RDA only — athletes need 500-1000mg" },
+      { "name": "Vitamin E", "nutrient_key": "vitamin_e", "amount_per_dose": null, "unit": "mg", "note": "RDA" },
+      { "name": "Vitamin A", "nutrient_key": "vitamin_a", "amount_per_dose": null, "unit": "mcg", "note": "RDA" },
+      { "name": "Magnesium", "nutrient_key": "magnesium_supplemental", "amount_per_dose": 75, "unit": "mg", "note": "Partial — ZMA covers rest" },
+      { "name": "Zinc", "nutrient_key": "zinc", "amount_per_dose": 8, "unit": "mg", "note": "Partial — ZMA covers rest" },
+      { "name": "Iron", "nutrient_key": "iron", "amount_per_dose": null, "unit": "mg", "note": "RDA" },
+      { "name": "Selenium", "nutrient_key": "selenium", "amount_per_dose": null, "unit": "mcg", "note": "RDA" },
+      { "name": "Chromium", "nutrient_key": "chromium", "amount_per_dose": null, "unit": "mcg", "note": "RDA — helps blood glucose" },
+      { "name": "CoQ10", "nutrient_key": "coq10", "amount_per_dose": 20, "unit": "mg", "note": "Trace dose — therapeutic needs 100-200mg" },
+      { "name": "Alpha-lipoic acid", "nutrient_key": "alpha_lipoic_acid", "amount_per_dose": null, "unit": "mg", "note": "Trace" },
+      { "name": "DigeZyme (digestive enzymes)", "nutrient_key": "digezyme", "amount_per_dose": null, "unit": "mg" },
+      { "name": "Hesperidin", "nutrient_key": "hesperidin", "amount_per_dose": null, "unit": "mg" },
+      { "name": "Choline bitartrate", "nutrient_key": "choline", "amount_per_dose": null, "unit": "mg" },
+      { "name": "Echinacea extract", "nutrient_key": "echinacea", "amount_per_dose": null, "unit": "mg" },
+      { "name": "Rosehip extract", "nutrient_key": "rosehip", "amount_per_dose": null, "unit": "mg" },
+      { "name": "Grape Seed extract 95% OPC", "nutrient_key": "grape_seed_extract", "amount_per_dose": null, "unit": "mg" }
+    ],
+    "interactions": [
+      {
+        "with": "iron",
+        "kind": "conflict",
+        "rule": "separate ≥2h from other zinc/calcium supplements — competitive mineral absorption",
+        "source": { "kind": "confirms", "by": "external", "ref": "https://pubmed.ncbi.nlm.nih.gov/11509108/" }
+      }
+    ],
+    "purchase_url": "https://gymbeam.com/multivitamin-vitality-complex-60-tab-gymbeam.html",
+    "purchase_note": null
+  },
+  {
+    "catalog_id": 5,
+    "continuous": true,
+    "cycle": null,
+    "continuous_source": {
+      "kind": "neutral",
+      "by": "koliada",
+      "ref": "Lesson 1-38 (Proteins: Amino Acids and Metabolism section, Koliada Part 1)",
+      "quote": "spirulina (highest, but impractical as a primary source and not deeply consumed — has its own toxin-related caveats not detailed further)"
+    },
+    "active_ingredients": [
+      { "name": "Spirulina", "nutrient_key": "spirulina", "amount_per_dose": 3000, "unit": "mg", "note": "6 tablets" }
+    ],
+    "interactions": [],
+    "purchase_url": "https://www.nowfoods.com/products/supplements/spirulina-organic-500-mg-tablets",
+    "purchase_note": null
+  },
+  {
+    "catalog_id": 6,
+    "continuous": true,
+    "cycle": null,
+    "continuous_source": {
+      "kind": "confirms",
+      "by": "koliada",
+      "ref": "Lesson 39-48 (Fiber section, Koliada Part 2)",
+      "quote": "psyllium husk mixed into yogurt (swells quickly, easy to eat a useful dose)"
+    },
+    "active_ingredients": [
+      { "name": "Psyllium Husk", "nutrient_key": "psyllium", "amount_per_dose": 2500, "unit": "mg", "note": "5 capsules" }
+    ],
+    "interactions": [],
+    "purchase_url": "https://www.nowfoods.com/products/supplements/psyllium-husk-caps-500-mg-veg-capsules",
+    "purchase_note": "No grounded source found (koliada corpus or allowlist) for psyllium's well-known fiber/drug-absorption-timing interaction within the task's search budget — see closing comment gap note. Not fabricated; left without an interactions[] entry."
+  },
+  {
+    "catalog_id": 7,
+    "continuous": true,
+    "cycle": null,
+    "continuous_source": {
+      "kind": "neutral",
+      "by": "koliada",
+      "ref": "Lesson 111-147 (Training Protocols / Sports supplements, Koliada Part 4)",
+      "quote": "essential amino acids (only if the diet is protein-deficient)"
+    },
+    "active_ingredients": [
+      { "name": "Essential Amino Acids (EAA)", "nutrient_key": "eaa", "amount_per_dose": 10000, "unit": "mg", "note": "1 scoop" },
+      { "name": "Leucine", "nutrient_key": "leucine", "amount_per_dose": null, "unit": "mg" },
+      { "name": "Isoleucine", "nutrient_key": "isoleucine", "amount_per_dose": null, "unit": "mg" },
+      { "name": "Valine", "nutrient_key": "valine", "amount_per_dose": null, "unit": "mg" }
+    ],
+    "interactions": [],
+    "purchase_url": null,
+    "purchase_note": "Applied Nutrition official site (appliednutrition.com) has no direct product page for this SKU within the 2-minute search budget — left null, not fabricated."
+  },
+  {
+    "catalog_id": 8,
+    "continuous": true,
+    "cycle": null,
+    "continuous_source": {
+      "kind": "neutral",
+      "by": "koliada",
+      "ref": "Lesson 64-67 (Phosphorus and Magnesium section, Koliada Part 2)",
+      "quote": "supports the nervous system and falling asleep (though whether magnesium meaningfully reduces stress or improves sleep specifically is flagged by Koliada as a question for the course's dedicated sleep/stress modules, not settled here)."
+    },
+    "active_ingredients": [
+      { "name": "Zinc (aspartate)", "nutrient_key": "zinc", "amount_per_dose": 30, "unit": "mg" },
+      { "name": "Magnesium (aspartate)", "nutrient_key": "magnesium_supplemental", "amount_per_dose": 450, "unit": "mg" },
+      { "name": "Vitamin B6", "nutrient_key": "vitamin_b6", "amount_per_dose": 10.5, "unit": "mg" }
+    ],
+    "interactions": [
+      {
+        "with": "iron",
+        "kind": "conflict",
+        "rule": "separate ≥2h — competitive absorption",
+        "source": { "kind": "confirms", "by": "external", "ref": "https://pubmed.ncbi.nlm.nih.gov/11509108/" }
+      },
+      {
+        "with": "copper",
+        "kind": "conflict",
+        "rule": "separate ≥2h — competitive absorption",
+        "source": { "kind": "confirms", "by": "external", "ref": "https://pubmed.ncbi.nlm.nih.gov/11509108/" }
+      },
+      {
+        "with": "vitamin_d",
+        "kind": "synergy",
+        "rule": "take together (magnesium is a required cofactor for vitamin D activation/metabolism)",
+        "source": { "kind": "confirms", "by": "external", "ref": "https://pubmed.ncbi.nlm.nih.gov/26773013/" }
+      }
+    ],
+    "purchase_url": "https://vplab.com/products/vplab-zma",
+    "purchase_note": null
+  },
+  {
+    "catalog_id": 9,
+    "continuous": true,
+    "cycle": null,
+    "continuous_source": {
+      "kind": "neutral",
+      "by": "external",
+      "ref": "https://pubmed.ncbi.nlm.nih.gov/12020172/"
+    },
+    "active_ingredients": [
+      { "name": "Asian Ginseng Extract", "nutrient_key": "ginseng", "amount_per_dose": 1120, "unit": "mg", "note": "2 capsules" }
+    ],
+    "interactions": [],
+    "purchase_url": "https://naturesway.com/products/asian-ginseng",
+    "purchase_note": null
+  },
+  {
+    "catalog_id": 10,
+    "continuous": true,
+    "cycle": null,
+    "continuous_source": {
+      "kind": "neutral",
+      "by": "external",
+      "ref": "https://pubmed.ncbi.nlm.nih.gov/40959699/"
+    },
+    "active_ingredients": [
+      { "name": "Lion's Mane Extract", "nutrient_key": "lions_mane", "amount_per_dose": 500, "unit": "mg", "note": "1 capsule, 30% polysaccharides" }
+    ],
+    "interactions": [],
+    "purchase_url": null,
+    "purchase_note": "No confirmed official Immune Labs product page or major-retailer listing for this exact SKU within the 2-minute search budget — left null, not fabricated."
+  },
+  {
+    "catalog_id": 12,
+    "continuous": true,
+    "cycle": null,
+    "continuous_source": {
+      "kind": "confirms",
+      "by": "koliada",
+      "ref": "Lesson 111-147 (Training Protocols / Sports supplements, Koliada Part 4)",
+      "quote": "beta-alanine (a buffer)"
+    },
+    "active_ingredients": [
+      { "name": "Beta-Alanine", "nutrient_key": "beta_alanine", "amount_per_dose": 2500, "unit": "mg", "note": "2-3г мірна ложка, середина діапазону" }
+    ],
+    "interactions": [],
+    "purchase_url": null,
+    "purchase_note": "Generic/no-brand item (\"Загальне\") — no store to link. The previous examine.com URL on this doc was an informational reference, not a store, and is replaced with null per this task's F4 instruction."
+  },
+  {
+    "catalog_id": 13,
+    "continuous": true,
+    "cycle": null,
+    "continuous_source": {
+      "kind": "neutral",
+      "by": "external",
+      "ref": "https://pubmed.ncbi.nlm.nih.gov/39083548/"
+    },
+    "active_ingredients": [
+      { "name": "Withania somnifera root extract", "nutrient_key": "ashwagandha", "amount_per_dose": 500, "unit": "mg", "equivalent_mg": 500 }
+    ],
+    "interactions": [],
+    "purchase_url": null,
+    "purchase_note": "No confirmed official NUTREND (nutrend.eu) product page or major retailer (iHerb/Amazon) listing for this exact SKU within the 2-minute search budget — left null, not fabricated."
+  },
+  {
+    "catalog_id": 14,
+    "continuous": true,
+    "cycle": null,
+    "continuous_source": {
+      "kind": "confirms",
+      "by": "koliada",
+      "ref": "Lesson 58-63 (Vitamin C section, Koliada Part 2)",
+      "quote": "beyond that, extra intake (200, 300, 400+ mg) is not meaningfully absorbed further; the gut deliberately limits uptake beyond what's needed."
+    },
+    "active_ingredients": [
+      { "name": "Vitamin C", "nutrient_key": "vitamin_c", "amount_per_dose": 500, "unit": "mg" }
+    ],
+    "interactions": [],
+    "purchase_url": null,
+    "purchase_note": "Generic/no-brand item — no store to link within the 2-minute search budget."
+  },
+  {
+    "catalog_id": 19,
+    "continuous": true,
+    "cycle": null,
+    "continuous_source": {
+      "kind": "confirms",
+      "by": "koliada",
+      "ref": "Lesson 58-63 (Vitamin C section, Koliada Part 2)",
+      "quote": "beyond that, extra intake (200, 300, 400+ mg) is not meaningfully absorbed further; the gut deliberately limits uptake beyond what's needed."
+    },
+    "active_ingredients": [
+      { "name": "Vitamin C", "nutrient_key": "vitamin_c", "amount_per_dose": 500, "unit": "mg" }
+    ],
+    "interactions": [],
+    "purchase_url": null,
+    "purchase_note": "Generic/no-brand item — no store to link within the 2-minute search budget. Duplicate catalog entry of id14 (same product, both generic Vitamin C 500mg)."
+  }
+]
