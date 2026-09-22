@@ -7,7 +7,7 @@
  * that decides WHICH catalog items need an LLM call at all.
  */
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { buildTargets, needsFill, supplementLabel } = require('../../scripts/fill-supplement-knowledge-1485')
+const { buildTargets, needsFill, findInvariantViolations, supplementLabel } = require('../../scripts/fill-supplement-knowledge-1485')
 
 describe('buildTargets — D4 target set (catalog items + orphaned knowledge docs)', () => {
   it('includes every catalog item (active and archived)', () => {
@@ -71,6 +71,47 @@ describe('needsFill', () => {
   })
   it('continuous:false with a cycle missing duration_weeks needs re-fill', () => {
     expect(needsFill({ knowledgeDoc: { catalog_id: 12, continuous: false, cycle: { source: { kind: 'neutral', by: 'external', ref: 'https://examine.com/x' } } } })).toBe(true)
+  })
+
+  // #1487 QA FAIL round 1 (Max/codex 22.09 13:24, live catalog_id 3): the
+  // MIRROR-IMAGE invalid state — `continuous:true` alongside a real,
+  // non-null `cycle` object — was NOT caught here before this fix. If such
+  // a doc already had `cycle.source` set, `--dry-run` reported "0 need
+  // filling" for it, masking the D4 violation permanently instead of
+  // re-offering it for repair.
+  it('continuous:true with a real non-null cycle (the live bad-state shape) needs re-fill, even though `continuous` is already set', () => {
+    expect(needsFill({ knowledgeDoc: { catalog_id: 3, continuous: true, cycle: { duration_weeks: 8, pause_weeks: 4 } } } as any)).toBe(true)
+  })
+  it('continuous:true with a real cycle that ALREADY has cycle.source still needs re-fill — the previous "0 need filling" masking bug', () => {
+    expect(needsFill({ knowledgeDoc: { catalog_id: 3, continuous: true, cycle: { duration_weeks: 8, pause_weeks: 4, source: { kind: 'not_covered', by: 'external' } } } } as any)).toBe(true)
+  })
+})
+
+describe('findInvariantViolations — D4 direct re-derivation, independent of needsFill()', () => {
+  it('empty/valid knowledge set -> no violations', () => {
+    const docs = [
+      { catalog_id: 1, continuous: true, cycle: null },
+      { catalog_id: 2, continuous: false, cycle: { duration_weeks: 4, pause_weeks: 0 } },
+    ]
+    expect(findInvariantViolations(docs)).toEqual([])
+  })
+
+  it('catches continuous:true with a real non-null cycle (the exact live #1487 QA-FAIL shape)', () => {
+    const docs = [{ catalog_id: 3, continuous: true, cycle: { duration_weeks: 8, pause_weeks: 4 } }]
+    const violations = findInvariantViolations(docs)
+    expect(violations).toHaveLength(1)
+    expect(violations[0].catalog_id).toBe(3)
+  })
+
+  it('catches continuous:false with an invalid/missing cycle (the #1487 original QA-FAIL shape)', () => {
+    const docs = [{ catalog_id: 12, continuous: false, cycle: null }]
+    const violations = findInvariantViolations(docs)
+    expect(violations.map((v: any) => v.catalog_id)).toEqual([12])
+  })
+
+  it('does NOT flag a doc merely missing cycle.source — that is a completeness gap for needsFill(), not a D4 invariant violation', () => {
+    const docs = [{ catalog_id: 3, continuous: false, cycle: { duration_weeks: 8, pause_weeks: 4 } }]
+    expect(findInvariantViolations(docs)).toEqual([])
   })
 })
 

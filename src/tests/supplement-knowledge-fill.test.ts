@@ -120,6 +120,30 @@ describe('computeFieldsToWrite — D5 "only write empty fields"', () => {
     const out = computeFieldsToWrite(existing, { continuous: true, cycle: null }, KOLIADA_SOURCE, null)
     expect(out).toEqual({ continuous: false })
   })
+
+  // #1487 QA FAIL round 1 (Max/codex 22.09 13:24, Apex triage 13:35): a doc
+  // ALREADY sitting in the invalid state D4 forbids — `continuous:true`
+  // with a real, non-null `cycle` object (the mirror image of the
+  // "pre-existing cycle, continuous:undefined" case above, but here
+  // `continuous` is not undefined, it is already wrongly `true`). Before
+  // this REPAIR branch existed, this fell through to the "patch missing
+  // cycle.source" branch (masking the invariant violation forever once
+  // source got backfilled) or matched no branch at all if source was
+  // already set (silently returning `{}`, i.e. `needsFill()`'s only signal
+  // was the raw `continuous===true && cycle!=null` check added alongside
+  // this fix).
+  it('REPAIR: continuous already (wrongly) true with a real non-null cycle and no source — corrects continuous to false, patches only cycle.source, never touches duration/pause', () => {
+    const broken = { continuous: true, cycle: { duration_weeks: 8, pause_weeks: 4 } }
+    const out = computeFieldsToWrite(broken, { continuous: true, cycle: null }, KOLIADA_SOURCE, null)
+    expect(out).toEqual({ continuous: false, 'cycle.source': KOLIADA_SOURCE })
+    expect(out.cycle).toBeUndefined()
+  })
+
+  it('REPAIR: continuous already (wrongly) true with a real cycle that ALREADY has a source — only continuous is corrected, cycle object untouched, idempotent on re-run', () => {
+    const broken = { continuous: true, cycle: { duration_weeks: 8, pause_weeks: 4, source: KOLIADA_SOURCE } }
+    const out = computeFieldsToWrite(broken, { continuous: true, cycle: null }, KOLIADA_SOURCE, null)
+    expect(out).toEqual({ continuous: false })
+  })
 })
 
 describe('buildPrompt', () => {
