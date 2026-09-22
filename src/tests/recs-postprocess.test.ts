@@ -2,7 +2,7 @@
  * Unit tests for lib/recs-postprocess.js (#1488, stage C of #1485, acceptance C2).
  */
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { normalizeForMatch, findStackMatch, postprocessOne, postprocessRecommendations } = require('../../lib/recs-postprocess')
+const { normalizeForMatch, findStackMatch, postprocessOne, postprocessRecommendations, computeDeterministicStaleLabs } = require('../../lib/recs-postprocess')
 
 const CORPUS = `In Lesson 12, Koliada explains that vitamin D absorption improves with fat-soluble co-ingestion.
 Per урок 27, creatine monohydrate has no established need for cycling.`
@@ -128,6 +128,65 @@ describe('postprocessRecommendations — Rule 4: affects only lists continuous:f
     expect(warnings).toHaveLength(2)
     expect(warnings.find((w: any) => w.type === 'against')).toMatchObject({ supplement_id: 1, name: 'Creatine HCl' })
     expect(warnings.find((w: any) => w.type === 'stale_lab')).toMatchObject({ marker: 'vitamin_d', age_days: 99 })
+  })
+})
+
+describe('postprocessRecommendations — C4′-c: deterministic stale_lab from labs, independent of LLM output', () => {
+  // Reproduces the ACTUAL live production form measured 2026-09-22 (Apex/Phil,
+  // task #1488 comments): 21 markers total, all age_days=323, 5 pathological
+  // (status!=='normal' AND value!=null): creatinine, homocysteine, pt,
+  // testosterone, vitamin_d. hba1c is status='low' but value:null -> excluded.
+  // hemoglobin/hematocrit/etc are status='normal' -> excluded.
+  const LIVE_LABS_FIXTURE = {
+    hemoglobin: { value: 153, date: '2025-11-03', age_days: 323, status: 'normal' },
+    hematocrit: { value: 43.4, date: '2025-11-03', age_days: 323, status: 'normal' },
+    creatinine: { value: 130, date: '2025-11-03', age_days: 323, status: 'high' },
+    homocysteine: { value: 15.7, date: '2025-11-03', age_days: 323, status: 'high' },
+    pt: { value: 12.6, date: '2025-11-03', age_days: 323, status: 'high' },
+    testosterone: { value: 11.8, date: '2025-11-03', age_days: 323, status: 'low' },
+    vitamin_d: { value: 25, date: '2025-11-03', age_days: 323, status: 'low' },
+    hba1c: { value: null, date: '2025-11-03', age_days: 323, status: 'low' },
+  }
+
+  it('computeDeterministicStaleLabs: exactly the 5 pathological+stale markers, hba1c excluded (value:null), normals excluded', () => {
+    const entries = computeDeterministicStaleLabs(LIVE_LABS_FIXTURE)
+    expect(entries.map((e: any) => e.marker).sort()).toEqual(['creatinine', 'homocysteine', 'pt', 'testosterone', 'vitamin_d'])
+  })
+
+  it('0 LLM candidates (recommendations=[]) still produces 5 stale_lab warnings — this is the live regression D3′ introduced', () => {
+    const knowledgeByCatalogId = new Map()
+    const { recommendations, warnings } = postprocessRecommendations([], { activeStack: [], knowledgeByCatalogId, corpusText: CORPUS, labs: LIVE_LABS_FIXTURE })
+    expect(recommendations).toHaveLength(0)
+    const markers = warnings.filter((w: any) => w.type === 'stale_lab').map((w: any) => w.marker).sort()
+    expect(markers).toEqual(['creatinine', 'homocysteine', 'pt', 'testosterone', 'vitamin_d'])
+  })
+
+  it('C4′-c1: an LLM-derived stale_lab warning for a marker already flagged by labs does NOT duplicate — one entry per marker', () => {
+    const knowledgeByCatalogId = new Map()
+    const rawItems = [
+      { key: 'vitamin_d', name: 'Some Vit D Item', source: 'lab', lab: { marker: 'vitamin_d', age_days: 45, test_date: '2026-08-08' }, verdict: koliadaVerdict('confirms') },
+    ]
+    const { warnings } = postprocessRecommendations(rawItems, { activeStack: [], knowledgeByCatalogId, corpusText: CORPUS, labs: LIVE_LABS_FIXTURE })
+    const vitDWarnings = warnings.filter((w: any) => w.type === 'stale_lab' && w.marker === 'vitamin_d')
+    expect(vitDWarnings).toHaveLength(1)
+    // total stale markers still exactly 5 (LLM one merges into the labs-driven one, doesn't add a 6th)
+    expect(warnings.filter((w: any) => w.type === 'stale_lab')).toHaveLength(5)
+  })
+
+  it('affects[] on a labs-driven stale_lab warning still follows Rule 4 (continuous:false only)', () => {
+    const activeStack = [{ id: 1, short_name: 'Creatine HCl', name: 'Amix Creatine HCl' }, { id: 2, short_name: 'Vitamin D3', name: 'GymBeam Vitamin D3' }]
+    const knowledgeByCatalogId = new Map([
+      [1, { catalog_id: 1, continuous: false }],
+      [2, { catalog_id: 2, continuous: true }],
+    ])
+    const { warnings } = postprocessRecommendations([], { activeStack, knowledgeByCatalogId, corpusText: CORPUS, labs: LIVE_LABS_FIXTURE })
+    const vitD = warnings.find((w: any) => w.type === 'stale_lab' && w.marker === 'vitamin_d')
+    expect(vitD.affects).toEqual(['Creatine HCl'])
+  })
+
+  it('no labs passed (existing call sites/tests) — behaves exactly as before, 0 deterministic stale warnings', () => {
+    const { warnings } = postprocessRecommendations([], { activeStack: [], knowledgeByCatalogId: new Map(), corpusText: CORPUS })
+    expect(warnings).toHaveLength(0)
   })
 })
 

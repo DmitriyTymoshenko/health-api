@@ -404,7 +404,7 @@ module.exports = function (getDB) {
     }
 
     const rawCandidates = json.items.map(item => toRawCandidate(item, latestLabs))
-    const { recommendations, warnings } = postprocessRecommendations(rawCandidates, { activeStack, knowledgeByCatalogId, corpusText: evidenceText })
+    const { recommendations, warnings } = postprocessRecommendations(rawCandidates, { activeStack, knowledgeByCatalogId, corpusText: evidenceText, labs: latestLabs })
 
     return { recommendations, warnings, errors: [], model: GEMINI_MODEL, usage }
   }
