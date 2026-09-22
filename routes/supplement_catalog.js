@@ -8,6 +8,7 @@ const { callGemini, GEMINI_MODEL } = require('../lib/gemini-text')
 const { fetchLatestLabs } = require('../lib/labs-latest')
 const { RECS_RESPONSE_SCHEMA, buildRecsPrompt, toRawCandidate } = require('../lib/recs-generate')
 const { postprocessRecommendations } = require('../lib/recs-postprocess')
+const { retrieveKoliadaSnippets, formatSnippets, termsFromStackAndLabs } = require('../lib/koliada-retrieve')
 
 // #1488 (stage C of #1485): manual refresh cap for GET /catalog/recommendations
 // /refresh — env-overridable with a hardcoded default (no new drop-in needed,
@@ -387,7 +388,9 @@ module.exports = function (getDB) {
       return { recommendations: [], warnings: [], errors: ['Koliada corpus unavailable (vault dir not found)'], model: null, usage: null }
     }
 
-    const prompt = buildRecsPrompt({ activeStack, knowledgeByCatalogId, latestLabs, whoopLatest, corpusText })
+    const snippets = retrieveKoliadaSnippets(corpusText, termsFromStackAndLabs(activeStack, latestLabs), { contextLines: 3, limit: 16 })
+    const evidenceText = formatSnippets(snippets)
+    const prompt = buildRecsPrompt({ activeStack, knowledgeByCatalogId, latestLabs, whoopLatest, evidenceText })
 
     let json, usage
     try {
@@ -401,7 +404,7 @@ module.exports = function (getDB) {
     }
 
     const rawCandidates = json.items.map(item => toRawCandidate(item, latestLabs))
-    const { recommendations, warnings } = postprocessRecommendations(rawCandidates, { activeStack, knowledgeByCatalogId, corpusText })
+    const { recommendations, warnings } = postprocessRecommendations(rawCandidates, { activeStack, knowledgeByCatalogId, corpusText: evidenceText })
 
     return { recommendations, warnings, errors: [], model: GEMINI_MODEL, usage }
   }

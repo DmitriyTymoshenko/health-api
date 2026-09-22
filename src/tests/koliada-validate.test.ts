@@ -31,6 +31,16 @@ describe('validateVerdict — (a) real quote + lesson ref stays koliada-grounded
     expect(validateVerdict(verdict, CORPUS)).toEqual(verdict)
   })
 
+  it('also accepts a plural lesson-range ref from the vault file header', () => {
+    const verdict = {
+      kind: 'neutral',
+      by: 'koliada',
+      ref: 'lessons 1–38',
+      quote: 'creatine monohydrate has no established need for cycling',
+    }
+    expect(validateVerdict(verdict, CORPUS)).toEqual(verdict)
+  })
+
   it('normalizes whitespace before matching (multi-line/extra-space quote still matches)', () => {
     const verdict = {
       kind: 'confirms',
@@ -41,6 +51,22 @@ describe('validateVerdict — (a) real quote + lesson ref stays koliada-grounded
     const out = validateVerdict(verdict, CORPUS)
     expect(out.kind).toBe('confirms')
     expect(out.by).toBe('koliada')
+  })
+
+  it('normalizes case, quotes, dashes, and punctuation before exact substring matching', () => {
+    const verdict = {
+      kind: 'confirms',
+      by: 'koliada',
+      ref: 'Lesson 12',
+      quote: 'Vitamin D absorption improves with “fat soluble” co ingestion',
+    }
+    const corpus = 'lesson 12 says: vitamin d absorption improves with fat-soluble co-ingestion.'
+    expect(validateVerdict(verdict, corpus)).toEqual({
+      kind: 'confirms',
+      by: 'koliada',
+      ref: 'Lesson 12',
+      quote: 'Vitamin D absorption improves with “fat soluble” co ingestion',
+    })
   })
 })
 

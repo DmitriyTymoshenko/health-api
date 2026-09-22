@@ -31,6 +31,7 @@ describe('buildRecsPrompt', () => {
     const prompt = buildRecsPrompt({ activeStack: [], knowledgeByCatalogId: new Map(), latestLabs: LATEST_LABS, whoopLatest: null, corpusText: 'CORPUS' })
     expect(prompt).toMatch(/vitamin_d:.*\[STALE/)
     expect(prompt).not.toMatch(/ferritin:.*\[STALE/)
+    expect(prompt).toContain('Do NOT output items derived from a LAB marker marked [STALE]')
   })
 
   it('embeds WHOOP fields using the REAL daily_metrics field names (not the old hrv/spo2/resting_hr names)', () => {
@@ -47,7 +48,19 @@ describe('buildRecsPrompt', () => {
     expect(prompt).toContain('No recent WHOOP')
   })
 
-  it('embeds the full corpus text verbatim', () => {
+  it('caps the model output size by instruction so Gemini does not truncate JSON', () => {
+    const prompt = buildRecsPrompt({ activeStack: [], knowledgeByCatalogId: new Map(), latestLabs: {}, whoopLatest: null, evidenceText: 'x' })
+    expect(prompt).toContain('Return at most 3 items total')
+  })
+
+  it('embeds the retrieved evidence snippets, not an implied full-corpus block', () => {
+    const prompt = buildRecsPrompt({ activeStack: [], knowledgeByCatalogId: new Map(), latestLabs: {}, whoopLatest: null, evidenceText: 'UNIQUE_SNIPPET_MARKER_XYZ' })
+    expect(prompt).toContain('RETRIEVED KOLIADA EXCERPTS START')
+    expect(prompt).toContain('UNIQUE_SNIPPET_MARKER_XYZ')
+    expect(prompt).not.toContain('KOLIADA CORPUS START')
+  })
+
+  it('keeps a backward-compatible corpusText fallback for old pure-helper callers', () => {
     const prompt = buildRecsPrompt({ activeStack: [], knowledgeByCatalogId: new Map(), latestLabs: {}, whoopLatest: null, corpusText: 'UNIQUE_CORPUS_MARKER_XYZ' })
     expect(prompt).toContain('UNIQUE_CORPUS_MARKER_XYZ')
   })

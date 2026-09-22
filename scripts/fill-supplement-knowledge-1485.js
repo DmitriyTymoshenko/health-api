@@ -22,6 +22,7 @@ const { MongoClient } = require('mongodb')
 const { loadCorpus } = require('../lib/koliada-corpus')
 const { callGemini } = require('../lib/gemini-text')
 const { validateVerdict } = require('../lib/koliada-validate')
+const { retrieveKoliadaSnippets, formatSnippets } = require('../lib/koliada-retrieve')
 const { RESPONSE_SCHEMA, buildPrompt, computeFieldsToWrite, isValidCycleObject } = require('../lib/supplement-knowledge-fill')
 
 const APPLY = process.argv.includes('--apply')
@@ -70,11 +71,13 @@ function needsFill(target) {
 
 async function classifyOne(target, corpusText, apiKey) {
   const label = supplementLabel(target.catalogDoc, target.knowledgeDoc)
-  const prompt = buildPrompt(label, corpusText)
+  const snippets = retrieveKoliadaSnippets(corpusText, [label, target.catalogDoc?.short_name, target.catalogDoc?.name, target.knowledgeDoc?.name], { contextLines: 3, limit: 8 })
+  const evidenceText = formatSnippets(snippets)
+  const prompt = buildPrompt(label, evidenceText)
   const { json, usage } = await callGemini({ apiKey, prompt, schema: RESPONSE_SCHEMA })
   if (!json) return { label, usage, error: 'Gemini returned no parseable JSON' }
 
-  const groundedSource = validateVerdict(json.verdict, corpusText)
+  const groundedSource = validateVerdict(json.verdict, evidenceText)
   const fieldsToWrite = computeFieldsToWrite(
     target.knowledgeDoc || {},
     { continuous: !!json.continuous, cycle: json.cycle || null },
