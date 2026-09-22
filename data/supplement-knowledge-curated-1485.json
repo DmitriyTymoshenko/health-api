@@ -165,9 +165,30 @@
     "active_ingredients": [
       { "name": "Psyllium Husk", "nutrient_key": "psyllium", "amount_per_dose": 2500, "unit": "mg", "note": "5 capsules" }
     ],
-    "interactions": [],
+    "interactions": [
+      {
+        "with": "magnesium_supplemental",
+        "kind": "conflict",
+        "rule": "separate ≥2h — intact (viscous) psyllium reduces magnesium absorption",
+        "source": {
+          "kind": "confirms",
+          "by": "external",
+          "ref": "https://pubmed.ncbi.nlm.nih.gov/15322358/"
+        }
+      },
+      {
+        "with": "zinc",
+        "kind": "conflict",
+        "rule": "separate ≥2h — intact (viscous) psyllium reduces zinc absorption",
+        "source": {
+          "kind": "confirms",
+          "by": "external",
+          "ref": "https://pubmed.ncbi.nlm.nih.gov/15322358/"
+        }
+      }
+    ],
     "purchase_url": "https://www.nowfoods.com/products/supplements/psyllium-husk-caps-500-mg-veg-capsules",
-    "purchase_note": "No grounded source found (koliada corpus or allowlist) for psyllium's well-known fiber/drug-absorption-timing interaction within the task's search budget — see closing comment gap note. Not fabricated; left without an interactions[] entry."
+    "purchase_note": "Round-1 gap closed (#1490 QA-FAIL round 1): PubMed E-utilities search (esearch+esummary, not the UI cookie-walled by the Koliada-corpus route) surfaced PMID 15322358 (Asvarujanon et al. 2004, Biosci Biotechnol Biochem) — abstract verified via efetch: intact/viscous psyllium (50 g/kg diet, 4 weeks) measurably reduced calcium, magnesium AND zinc absorption in rats; effect reversed by lowering psyllium's viscosity. Rat-study evidence tier, stated as such — not overclaimed as human RCT data. Grounds the 2 conflict entries above."
   },
   {
     "catalog_id": 7,
