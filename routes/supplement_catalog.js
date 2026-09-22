@@ -313,6 +313,12 @@ module.exports = function (getDB) {
   })
 
   // PATCH /api/catalog/:id/stock — update stock_remaining
+  // #1489 (stage E of #1485, design E2): also anchors the new count to today
+  // (Kyiv) — `stock_anchor_date` + `stock_anchor_count` — so
+  // lib/stock.js::computeStock can derive `remaining` day-by-day from this
+  // point forward instead of needing a decrementing cron. anchor_count takes
+  // whichever of stock_remaining/stock_count was actually sent (mirrors the
+  // existing "one or the other" contract just above).
   router.patch('/:id/stock', async (req, res) => {
     try {
       const db = getDB()
@@ -321,6 +327,8 @@ module.exports = function (getDB) {
       if (req.body.stock_remaining !== undefined) updates.stock_remaining = Number(req.body.stock_remaining)
       if (req.body.stock_count !== undefined) updates.stock_count = Number(req.body.stock_count)
       if (Object.keys(updates).length === 0) return res.status(400).json({ error: 'stock_remaining or stock_count required' })
+      updates.stock_anchor_date = formatDateKyiv(new Date())
+      updates.stock_anchor_count = updates.stock_remaining !== undefined ? updates.stock_remaining : updates.stock_count
       const result = await db.collection('supplement_catalog').findOneAndUpdate(
         { id },
         { $set: updates },
