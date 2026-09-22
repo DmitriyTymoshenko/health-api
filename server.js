@@ -5,6 +5,10 @@ const path = require('path')
 
 const pkg = require('./package.json')
 const { checkCycleEndsAndNotify } = require('./lib/cycle-notify')
+// #1492 (stage H of #1485): low-stock reminder (REQ-7) + weekly labs digest
+// (REQ-10) — reuse the SAME 60-min interval tick below, not a second one.
+const { checkLowStockAndNotify } = require('./lib/stock-notify')
+const { sendWeeklyLabsDigest } = require('./lib/labs-digest')
 
 const app = express()
 const PORT = process.env.HEALTH_API_TEST_PORT || 3001
@@ -373,10 +377,17 @@ if (require.main === module) {
       // Mongo connection settle), then every 60 minutes. Idempotent via the
       // end_notified flags in lib/cycle-notify.js — a restart mid-interval
       // just re-checks the same cycles, never double-sends.
+      // #1492 (stage H): low-stock (REQ-7) + weekly labs digest (REQ-10)
+      // ride the SAME tick — one setInterval, three independently-idempotent
+      // checks, not a second interval.
       setTimeout(() => {
         checkCycleEndsAndNotify(getDB()).catch(err => console.error('[cycle-notify] initial run failed:', err.message))
+        checkLowStockAndNotify(getDB()).catch(err => console.error('[stock-notify] initial run failed:', err.message))
+        sendWeeklyLabsDigest(getDB()).catch(err => console.error('[labs-digest] initial run failed:', err.message))
         setInterval(() => {
           checkCycleEndsAndNotify(getDB()).catch(err => console.error('[cycle-notify] interval run failed:', err.message))
+          checkLowStockAndNotify(getDB()).catch(err => console.error('[stock-notify] interval run failed:', err.message))
+          sendWeeklyLabsDigest(getDB()).catch(err => console.error('[labs-digest] interval run failed:', err.message))
         }, 60 * 60 * 1000)
       }, 30 * 1000)
     })

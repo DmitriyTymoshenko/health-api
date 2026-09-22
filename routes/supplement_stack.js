@@ -2,7 +2,7 @@
 
 const { Router } = require('express')
 const { formatDateKyiv } = require('../lib/training-program')
-const { computeStock } = require('../lib/stock')
+const { computeStock, mostRecentCycleBySupplementId } = require('../lib/stock')
 const { sumStack } = require('../lib/nutrient-sum')
 const { checkStack } = require('../lib/interactions')
 
@@ -41,13 +41,9 @@ module.exports = function (getDB) {
       // one's manual `status` may still say 'active' if it was never
       // explicitly closed, so picking by start_date rather than filtering on
       // status is the only way to always land on the CURRENT cycle).
-      const cycleBySupplementId = new Map()
-      for (const cycle of cycles) {
-        const existing = cycleBySupplementId.get(cycle.supplement_id)
-        if (!existing || cycle.start_date > existing.start_date) {
-          cycleBySupplementId.set(cycle.supplement_id, cycle)
-        }
-      }
+      // #1492: extracted to lib/stock.js::mostRecentCycleBySupplementId so
+      // lib/stock-notify.js reuses the SAME fold instead of a second copy.
+      const cycleBySupplementId = mostRecentCycleBySupplementId(cycles)
 
       const stock = activeItems.map((item) => {
         const cycle = cycleBySupplementId.get(item.id) || null

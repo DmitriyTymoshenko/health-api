@@ -3,6 +3,12 @@ const multer = require('multer')
 const path = require('path')
 const fs = require('fs')
 const { formatDateKyiv, daysBetweenDateStrings } = require('../lib/training-program')
+// #1492 (stage H of #1485, REQ-10): reminder bucketing extracted to
+// lib/labs-reminders.js so the new weekly digest can reuse it instead of
+// duplicating RETEST_INTERVALS/daysLeft logic. Safe to require here (no
+// cycle): lib/labs-reminders.js does NOT require this file at its own
+// top-level — see that file's header comment for why.
+const { computeLabsReminders } = require('../lib/labs-reminders')
 
 const upload = multer({
   dest: '/tmp/health-api/uploads/',
@@ -302,69 +308,8 @@ function makeRouter(getDB) {
     try {
       const db = getDB()
       const all = await db.collection('lab_results').find({ excluded: { $ne: true } }).sort({ date: -1 }).toArray()
-
-      // Build latest per biomarker
-      const latest = {}
-      for (const entry of all) {
-        for (const [key, val] of Object.entries(entry.values || {})) {
-          if (!latest[key]) {
-            latest[key] = { value: val, date: entry.date }
-          }
-        }
-      }
-
-      const today = new Date()
-      const overdue = []  // daysLeft <= 0
-      const soon = []     // daysLeft 1-30
-      const upcoming = [] // daysLeft > 30
-      const never = []    // no data at all
-
-      for (const [key, intervalDays] of Object.entries(RETEST_INTERVALS)) {
-        const ref = REFERENCE_RANGES[key]
-        const name = ref?.name || key
-
-        if (!latest[key]) {
-          never.push({ key, name, intervalDays })
-          continue
-        }
-
-        const lastDate = new Date(latest[key].date)
-        const nextDate = new Date(lastDate)
-        nextDate.setDate(nextDate.getDate() + intervalDays)
-        const daysLeft = Math.ceil((nextDate - today) / 86400000)
-
-        const item = {
-          key, name, intervalDays,
-          lastDate: latest[key].date,
-          lastValue: latest[key].value,
-          nextDate: nextDate.toISOString().split('T')[0],
-          daysLeft,
-          status: getStatus(key, latest[key].value),
-        }
-
-        if (daysLeft <= 0) overdue.push(item)
-        else if (daysLeft <= 30) soon.push(item)
-        else upcoming.push(item)
-      }
-
-      // Sort: overdue by most overdue first, soon/upcoming by soonest first
-      overdue.sort((a, b) => a.daysLeft - b.daysLeft)
-      soon.sort((a, b) => a.daysLeft - b.daysLeft)
-      upcoming.sort((a, b) => a.daysLeft - b.daysLeft)
-
-      res.json({
-        overdue,
-        soon,
-        upcoming,
-        never,
-        summary: {
-          total: Object.keys(RETEST_INTERVALS).length,
-          overdueCount: overdue.length,
-          soonCount: soon.length,
-          upcomingCount: upcoming.length,
-          neverCount: never.length,
-        },
-      })
+      const result = computeLabsReminders(all, REFERENCE_RANGES, RETEST_INTERVALS, getStatus, new Date())
+      res.json(result)
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -566,3 +511,6 @@ module.exports.extractDateFromPdf = extractDateFromPdf
 module.exports.isPlausible = isPlausible
 module.exports.getStatus = getStatus
 module.exports.REFERENCE_RANGES = REFERENCE_RANGES
+// #1492 (stage H of #1485): exposed so lib/labs-reminders.js::fetchLabsReminders
+// (consumed by lib/labs-digest.js) can reuse the SAME interval table by name.
+module.exports.RETEST_INTERVALS = RETEST_INTERVALS
