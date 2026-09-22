@@ -106,13 +106,60 @@ const UPPER_LIMITS = {
   // No established UL — insufficient long-term human safety data for a
   // numeric ceiling. Still present so nutrient-sum.js can surface a row
   // with `ul: null` instead of silently dropping these ingredients.
-  creatine: { ul: null, unit: null, note: 'no established UL', source_url: null },
-  beta_alanine: { ul: null, unit: null, note: 'no established UL', source_url: null },
-  eaa: { ul: null, unit: null, note: 'no established UL (individual essential amino acids)', source_url: null },
-  psyllium: { ul: null, unit: null, note: 'no established UL', source_url: null },
-  ashwagandha: { ul: null, unit: null, note: 'no established UL', source_url: null },
-  lions_mane: { ul: null, unit: null, note: 'no established UL', source_url: null },
-  ginseng: { ul: null, unit: null, note: 'no established UL', source_url: null },
+  // #1489 QA-FAIL round 1 / spec amendment E3′ (Apex, task #1489 comment
+  // 22.09 13:58): every row — including `ul: null` rows — MUST carry a
+  // non-null `source_url` + a non-empty `note` naming what the source
+  // actually states. Host allowlist widened for these 7 rows to any
+  // `*.nih.gov` subdomain (ODS itself has no factsheet for the herbs) plus
+  // EFSA. Every URL below was checked LIVE 2026-09-22: `curl -o /dev/null
+  // -w '%{http_code}'` returns 403 for ods.od.nih.gov / efsa.onlinelibrary
+  // .wiley.com (their edge WAF blocks non-browser clients — confirmed by
+  // curling the ALREADY-accepted vitamin_d/omega3_epa_dha URLs above, same
+  // 403) and 200 for the ncbi.nlm.nih.gov/nccih.nih.gov/pmc.ncbi.nlm.nih.gov
+  // hosts; the WAF-blocked ones were confirmed live via WebSearch instead
+  // (title + URL match) — table in the #1489 closing `tasks_comment`.
+  creatine: {
+    ul: null,
+    unit: null,
+    note: 'no UL set; NIH ODS "Dietary Supplements for Exercise and Athletic Performance" factsheet: creatine (3-5 g/day maintenance, up to ~20 g/day short-term loading protocols) is well tolerated in healthy adults — no formal UL established',
+    source_url: 'https://ods.od.nih.gov/factsheets/ExerciseAndAthleticPerformance-HealthProfessional/',
+  },
+  beta_alanine: {
+    ul: null,
+    unit: null,
+    note: 'no UL set; NIH ODS "Dietary Supplements for Exercise and Athletic Performance" factsheet: 4-6 g/day for ~10 weeks raises muscle carnosine, with dose-dependent paresthesia (tingling) as the main reported side effect — no formal UL established',
+    source_url: 'https://ods.od.nih.gov/factsheets/ExerciseAndAthleticPerformance-HealthProfessional/',
+  },
+  eaa: {
+    ul: null,
+    unit: null,
+    note: 'no UL set (individual essential amino acids); NCBI Bookshelf "Safety Concerns Regarding Supplemental Amino Acids": EAA-based supplementation generally does not raise urea/ammonia production in healthy adults, but safety data in impaired renal function is insufficient — no formal UL established',
+    source_url: 'https://www.ncbi.nlm.nih.gov/books/NBK209070/',
+  },
+  psyllium: {
+    ul: null,
+    unit: null,
+    note: 'no UL set; EFSA 2010 dietary-fibre health-claims opinion (ID 744 et al.) authorizes psyllium claims for glycemic/GI function at 3.5-14 g/day and satiety at 1-3 g/day, i.e. those intakes are EFSA-reviewed as beneficial, but the opinion sets no formal upper intake level',
+    source_url: 'https://efsa.onlinelibrary.wiley.com/doi/10.2903/j.efsa.2010.1735',
+  },
+  ashwagandha: {
+    ul: null,
+    unit: null,
+    note: 'no UL set; NCCIH ashwagandha herb page: has sedative effects and may potentiate benzodiazepines/other sedatives; long-term human safety data are limited — no formal UL established',
+    source_url: 'https://www.nccih.nih.gov/health/ashwagandha',
+  },
+  lions_mane: {
+    ul: null,
+    unit: null,
+    note: "no UL set; PMC toxicological assessment of Hericium erinaceus (lion's mane): a 13-week rodent feeding study found no mortality/toxicity signal at tested doses; long-term human safety data are limited — no formal UL established",
+    source_url: 'https://pmc.ncbi.nlm.nih.gov/articles/PMC12603391/',
+  },
+  ginseng: {
+    ul: null,
+    unit: null,
+    note: 'no UL set; NCCIH "Asian Ginseng: Usefulness and Safety": short-term use at recommended amounts appears safe for most people, but long-term safety is uncertain — no formal UL established',
+    source_url: 'https://www.nccih.nih.gov/health/asian-ginseng',
+  },
 }
 
 module.exports = { UPPER_LIMITS }
