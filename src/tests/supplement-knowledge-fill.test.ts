@@ -96,6 +96,30 @@ describe('computeFieldsToWrite — D5 "only write empty fields"', () => {
     const broken = { continuous: false, cycle: null }
     expect(() => computeFieldsToWrite(broken, { continuous: false, cycle: null }, NOT_COVERED, null)).toThrow(/continuous:false requires a valid cycle/)
   })
+
+  // #1488 REAL BUG (found live, GET /catalog/recommendations verification,
+  // same session as the fix): catalog_id 3 had a PRE-EXISTING real cycle
+  // ({duration_weeks:8, pause_weeks:4}, seeded before continuous ever
+  // existed as a field) — `continuous` was `undefined`. The pre-fix branch
+  // only checked `doc.continuous === undefined` and then trusted the LLM's
+  // `continuous:true` verdict outright, leaving the pre-existing cycle
+  // object untouched (the `if (doc.cycle === undefined)` guard never fired
+  // since a real cycle was already there) — live result: `continuous:true`
+  // WITH a non-null cycle, the mirror-image of the #1487 bug and an
+  // equally real invariant violation.
+  it('a doc with a PRE-EXISTING real cycle and continuous:undefined forces continuous:false regardless of what the LLM says, and only patches cycle.source', () => {
+    const existingWithCycleOnly = { cycle: { duration_weeks: 8, pause_weeks: 4 } } // continuous genuinely absent
+    const out = computeFieldsToWrite(existingWithCycleOnly, { continuous: true, cycle: null }, KOLIADA_SOURCE, null)
+    expect(out).toEqual({ continuous: false, 'cycle.source': KOLIADA_SOURCE })
+    // Proves the pre-existing duration_weeks/pause_weeks are never touched/overwritten.
+    expect(out.cycle).toBeUndefined()
+  })
+
+  it('same pre-existing-cycle case but the doc ALREADY has cycle.source too — writes NOTHING (idempotent)', () => {
+    const existing = { cycle: { duration_weeks: 8, pause_weeks: 4, source: KOLIADA_SOURCE } }
+    const out = computeFieldsToWrite(existing, { continuous: true, cycle: null }, KOLIADA_SOURCE, null)
+    expect(out).toEqual({ continuous: false })
+  })
 })
 
 describe('buildPrompt', () => {
