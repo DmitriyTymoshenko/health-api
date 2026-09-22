@@ -60,13 +60,40 @@ function buildTargets(catalogDocs, knowledgeDocs) {
 // cycle is a data-integrity bug, not a "complete" state — it must be
 // re-offered to the next run so it self-heals instead of being silently
 // skipped forever.
+//
+// #1487 QA FAIL round 1 (Max/codex 22.09 13:24, Apex triage 13:35): the
+// MIRROR-IMAGE invalid state — `continuous:true` alongside a real, non-null
+// `cycle` object — was NOT detected here. If such a doc happened to already
+// have `cycle.source` set, `--dry-run` reported it as complete ("0 need
+// filling") even though it violates D4, hiding the broken state instead of
+// surfacing it. Detected unconditionally on `cycle != null` (not gated on
+// `isValidCycleObject`/`.source`) — ANY non-null cycle alongside
+// `continuous:true` is itself the violation, regardless of the cycle's own
+// shape or whether its `source` sub-field happens to be filled.
 function needsFill(target) {
   const k = target.knowledgeDoc
   if (!k) return true
   if (k.continuous === undefined) return true
   if (k.continuous === false && !isValidCycleObject(k.cycle)) return true
+  if (k.continuous === true && k.cycle != null) return true
   if (isValidCycleObject(k.cycle) && k.cycle.source === undefined) return true
   return false
+}
+
+// #1487 QA FAIL round 1 (Max/codex 22.09 13:24): "0 need filling" alone is
+// not proof the D4 invariant holds — a doc that would need re-filling for a
+// COMPLETENESS reason (missing continuous, missing cycle.source, ...) shows
+// up in `toFill`, but a doc could in principle sit in an invalid shape that
+// a future needsFill() blind spot fails to catch. This is a DIRECT,
+// standalone re-derivation of the same D4 check the live `GET
+// /api/catalog/knowledge` invariant scan and `lib/validate.js` HTTP
+// middleware both enforce — independent of `needsFill()` so a bug in one
+// does not hide a violation from the other. Always printed, even when
+// `toFill` is empty, so `--dry-run` never goes silent on an invalid state.
+function findInvariantViolations(knowledgeDocs) {
+  return knowledgeDocs
+    .filter(k => (k.continuous === true && k.cycle != null) || (k.continuous === false && !isValidCycleObject(k.cycle)))
+    .map(k => ({ catalog_id: k.catalog_id, continuous: k.continuous, cycle: k.cycle }))
 }
 
 async function classifyOne(target, corpusText, apiKey) {
@@ -112,6 +139,12 @@ async function main() {
     const targets = buildTargets(catalogDocs, knowledgeDocs)
     const toFill = targets.filter(needsFill)
     console.log(`Targets: ${targets.length} total, ${toFill.length} need filling (${targets.length - toFill.length} already complete, 0 spend on those)`)
+
+    const violations = findInvariantViolations(knowledgeDocs)
+    console.log(`Invariant scan (D4: continuous===true&&cycle!=null OR continuous===false&&invalid-cycle) — invalid: ${JSON.stringify(violations.map(v => v.catalog_id))}`)
+    if (violations.length > 0) {
+      console.log(violations)
+    }
 
     let totalPromptTokens = 0
     let totalCandidateTokens = 0
@@ -180,4 +213,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { buildTargets, needsFill, supplementLabel, classifyOne }
+module.exports = { buildTargets, needsFill, findInvariantViolations, supplementLabel, classifyOne }
