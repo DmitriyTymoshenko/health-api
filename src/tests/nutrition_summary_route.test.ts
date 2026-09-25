@@ -57,13 +57,16 @@ function makeGetDB(opts: { entries: Doc[]; profile: Doc | null; latestWeight: Do
       }
       if (name === 'personal_profile') return { findOne: async () => opts.profile }
       if (name === 'weight_log') return { findOne: async () => opts.latestWeight }
-      // #1099: summaryHandler now calls resolveDayTypeAwareKcalBasis, which reads
-      // whoop_cycles ONLY when the profile has no explicit daily_kcal_goal (every
-      // profile in THIS file sets one — see PROFILE below — so this branch is never
-      // actually hit here; it exists so the allowlist doesn't throw if that changes).
+      // #1099/#1504: summaryHandler now calls resolveKcalBasisWithForecast, which
+      // reads whoop_cycles ONLY when the profile has no explicit daily_kcal_goal
+      // (every profile in THIS file sets one EXCEPT the #1099 day-type test below —
+      // see PROFILE vs profileNoOverride). `findOne` added for #1504's own
+      // "does today have a live cycle yet" check (lib/whoop-forecast-kcal.js);
+      // `find` stays for #1099's weekday-analog window query.
       if (name === 'whoop_cycles') {
         const cycles = opts.whoopCycles ?? []
         return {
+          findOne: async (filter: Doc = {}) => cycles.find((c) => c.date === filter.date) ?? null,
           find: (filter: Doc = {}) => ({
             toArray: async () => {
               const { $gte, $lt } = filter.date || {}
@@ -72,6 +75,13 @@ function makeGetDB(opts: { entries: Doc[]; profile: Doc | null; latestWeight: Do
           }),
         }
       }
+      // #1504: once a live cycle for `date` clears the forecast-trust threshold,
+      // resolveKcalBasisWithForecast also reads activity_plans/whoop_workouts (the
+      // planned-workout addition) — empty here, no test in this file feeds a cycle
+      // above the threshold for "today", so these stay unreached but present so the
+      // allowlist doesn't throw if that changes.
+      if (name === 'activity_plans') return { find: () => ({ toArray: async () => [] }) }
+      if (name === 'whoop_workouts') return { find: () => ({ toArray: async () => [] }) }
       throw new Error(`summaryHandler read an unexpected collection: ${name}`)
     },
   })
@@ -229,5 +239,28 @@ describe('GET /api/nutrition/summary — route wiring of the sat_fat_* / sugar_*
     // stableDayKcalBasis(2701,500) = 2201; weekday analog 2800 - 500 = 2300 > 2201.
     expect(res.body.kcal_goal).toBe(2300)
     expect(res.body.kcal_goal).toBeGreaterThan(2201)
+    // #1504: no whoop_cycles doc dated WEDNESDAY itself (all 6 analogs are 7-42 days
+    // before it) -> not forecast-worthy -> basis stays 'day_type_avg'.
+    expect(res.body.kcal_basis).toBe('day_type_avg')
+  })
+
+  it('#1504: a CLOSED cycle for a PAST date switches this route to whoop_forecast, and it agrees with what /api/targets would give for the same date', async () => {
+    // A closed cycle (isOpenToday can never be true for a past date, see
+    // whoop_forecast_kcal_1504.test.ts) makes this deterministic without touching the
+    // real wall clock: kcal = calories_burned + goalKcalDelta = 2600 - 500 = 2100.
+    const PAST_DATE = '2026-08-01'
+    const profileNoOverride: Doc = { _type: 'profile', tdee_kcal: 2701, deficit_kcal: 500, primary_goal: 'weight_loss', daily_kcal_goal: null }
+    const app = makeApp({
+      profile: profileNoOverride,
+      latestWeight: WEIGHT,
+      entries: [],
+      whoopCycles: [{ date: PAST_DATE, calories_burned: 2600, end: new Date() }],
+    })
+
+    const res = await request(app).get('/api/nutrition/summary').query({ date: PAST_DATE })
+
+    expect(res.status).toBe(200)
+    expect(res.body.kcal_basis).toBe('whoop_forecast')
+    expect(res.body.kcal_goal).toBe(2100)
   })
 })

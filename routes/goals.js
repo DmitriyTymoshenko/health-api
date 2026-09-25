@@ -113,6 +113,12 @@ module.exports = function (getDB) {
       const goals = {
         calories_limit: targets.kcal,
         protein_min: proteinGoal?.target_value || targets.protein_g,
+        // #1504 — 'day_type_avg' | 'whoop_forecast', passed through unchanged. NOTE:
+        // this reflects the basis for `requestedDate` ONLY (today, by default) —
+        // `calories_limit` above is applied flatly across the whole 90-day streak
+        // window below (pre-existing #1298 R4 design, unchanged by #1504). See task
+        // #1504 closing comment for the measured streak-diff this can introduce.
+        basis: targets.basis,
       }
 
       // Generate last 90 days

@@ -297,16 +297,20 @@ module.exports = function (getDB) {
       // 1. Fetch today's nutrition
       const nutritionEntries = await db.collection('nutrition_log').find({ date }).toArray()
 
-      // 2. Get WHOOP calories burned for today — INFORMATIONAL ONLY (displayed as
-      // `whoop_calories_burned`/`whoop_based`). #1295: this used to also DRIVE the
-      // calorie target (resolveDayKcalTarget), which is exactly why the target
-      // swung 1444 (noon, partial burn) -> 2400 (night, full burn) on one day.
+      // 2. Get WHOOP calories burned for today — displayed as `whoop_calories_burned`/
+      // `whoop_based` (kept as its OWN read for that display purpose). #1295: this used
+      // to also DRIVE the calorie target directly (resolveDayKcalTarget), which is
+      // exactly why the target swung 1444 (noon, partial burn) -> 2400 (night, full
+      // burn) on one day. #1504 reintroduces a live-cycle influence on the target, but
+      // ONLY through the resolver below (a forecast, not the raw partial burn) — see
+      // `targets.basis` and lib/whoop-forecast-kcal.js.
       const whoopCycle = await db.collection('whoop_cycles').findOne({ date })
       const caloriesBurned = whoopCycle?.calories_burned || null
 
-      // 3. THE single day-target resolver (#1295) — every number below comes from
-      // the SAME source /api/nutrition/summary, /api/goals/streaks, /api/water/today
-      // and /api/profile/metrics use (lib/targets-resolver.js). No local re-derivation.
+      // 3. THE single day-target resolver (#1295/#1504) — every number below comes
+      // from the SAME source /api/nutrition/summary, /api/goals/streaks,
+      // /api/water/today and /api/profile/metrics use (lib/targets-resolver.js). No
+      // local re-derivation.
       const targets = await resolveDayTargets(db, date)
       const deficitGoal = targets.deficit_kcal
       const targetCalories = targets.kcal
@@ -507,6 +511,9 @@ module.exports = function (getDB) {
           calories_remaining: Math.round(remainingCalories),
           whoop_calories_burned: caloriesBurned,
           whoop_based: !!caloriesBurned,
+          // #1504 — 'day_type_avg' | 'whoop_forecast', passed through unchanged from
+          // the resolver (BASE RULE: every consumer surfaces it, none re-derive it).
+          basis: targets.basis,
           deficit_goal: deficitGoal,
           protein_consumed: Math.round(consumed.protein),
           protein_target: Math.round(targetProtein),
@@ -873,6 +880,11 @@ module.exports = function (getDB) {
           date,
           is_today: isToday,
           calories_target: targets.kcal,
+          // #1504 — 'day_type_avg' | 'whoop_forecast'. Only `i===0` (today) can ever
+          // be 'whoop_forecast' — a future date has no whoop_cycles doc yet, so the
+          // resolver always falls back to 'day_type_avg' for i>=1 (see
+          // lib/whoop-forecast-kcal.js's "no cycle -> fallback" guard).
+          basis: targets.basis,
           // #1099 UI signal: true when the day-type analog actually raised the basis
           // above the plain TDEE-deficit number (an explicit `daily_kcal_goal`
           // override, or a weekday with too few analogs, means this is always false).

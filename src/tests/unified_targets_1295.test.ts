@@ -154,10 +154,15 @@ const PROFILE: Doc = {
   weight_goal_date: '2026-10-15',
 }
 const WEIGHT_ENTRY: Doc = { date: TODAY, weight_kg: 93.9 }
-// A PARTIAL WHOOP cycle (>1200 kcal, so the pre-#1295 resolveDayKcalTarget WOULD have
-// used it: 1944 - 500 = 1444 at this point of the day) — the whole point of #1295 is
-// that this number must NOT move the calorie target anymore.
-const WHOOP_CYCLE: Doc = { date: TODAY, calories_burned: 1944, strain: 10.5 }
+// A PARTIAL WHOOP cycle, deliberately BELOW #1504's MIN_TRUSTED_PARTIAL_BURN_KCAL
+// (1200, lib/whoop-forecast-kcal.js) — this file's whole point (still valid post-#1504)
+// is that a partial burn with NO real signal yet must not move the calorie target.
+// #1504 reuses the SAME 1200 threshold the pre-#1295 resolveDayKcalTarget() used
+// ("only trust it once it passes basal-metabolism scale") to decide whether a live
+// cycle is forecast-worthy at all — a value at or below it always falls back to
+// 'day_type_avg', by design, regardless of #1504. The >1200/whoop_forecast case has
+// its own dedicated coverage in whoop_forecast_kcal_1504.test.ts.
+const WHOOP_CYCLE: Doc = { date: TODAY, calories_burned: 1100, strain: 10.5 }
 
 const EXPECTED_KCAL = 2201 // stableDayKcalBasis(2701, 500)
 const EXPECTED_PROTEIN_G = 188 // round(93.9 * 2.0)
@@ -184,16 +189,24 @@ describe('#1295 — one date ⇒ one calorie/protein/water/weight value across e
     expect(summary.body.kcal_goal).toBe(EXPECTED_KCAL)
     expect(streaks.body.goals.calories_limit).toBe(EXPECTED_KCAL)
 
+    // #1504 — all four surfaces must also agree on WHICH basis produced that number.
+    expect(targets.body.basis).toBe('day_type_avg')
+    expect(recommendations.body.summary.basis).toBe('day_type_avg')
+    expect(summary.body.kcal_basis).toBe('day_type_avg')
+    expect(streaks.body.goals.basis).toBe('day_type_avg')
+
     // deficit_kcal: Nutrition.jsx's "Дефіцит по плану" row (#1295) reads this field
     // instead of GET /api/settings/plan?date= (a DIFFERENT, historical-snapshot
     // quantity per lib/nutrition-targets.js's own doc comment).
     expect(targets.body.deficit_kcal).toBe(500)
     expect(summary.body.deficit_kcal).toBe(500)
 
-    // The regression this file exists to catch: a live partial WHOOP burn (1944 kcal,
-    // above the 1200 "real cycle" threshold) must NOT have moved the target off 2201.
-    expect(recommendations.body.summary.whoop_calories_burned).toBe(1944) // informational, unchanged
-    expect(recommendations.body.summary.calories_target).not.toBe(1444) // 1944 - 500, the pre-#1295 bug
+    // The regression this file exists to catch: a live partial WHOOP burn (1100 kcal,
+    // at/below the 1200 "real cycle" threshold) must NOT have moved the target off
+    // 2201. The >1200/whoop_forecast case is #1504's INTENDED reversal of this
+    // invariant — covered separately in whoop_forecast_kcal_1504.test.ts, not here.
+    expect(recommendations.body.summary.whoop_calories_burned).toBe(1100) // informational, unchanged
+    expect(recommendations.body.summary.calories_target).not.toBe(600) // 1100 - 500, the pre-#1295 bug shape
   })
 
   it('protein target: /api/targets, /api/recommendations, /api/nutrition/summary, /api/goals/streaks all agree', async () => {

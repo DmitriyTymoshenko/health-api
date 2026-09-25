@@ -21,9 +21,14 @@ const {
 // allowlist).
 const { deriveMacroRangesG } = require('../lib/targets-resolver')
 const { aggregateDay, macroContribution } = require('../lib/nutrition-aggregate')
-// #1099 — day-type-aware kcal basis (weekday-recurring analog), the ONLY thing
-// that now widens this route's collection footprint beyond the #1396 note above.
-const { resolveDayTypeAwareKcalBasis } = require('../lib/day-type-kcal')
+// #1504 — WHOOP-forecast-aware kcal basis (day-type analog + live-cycle forecast).
+// THE thing that widens this route's collection footprint beyond the #1396 note
+// above (whoop_cycles always; activity_plans/whoop_workouts only once a live cycle
+// clears the forecast-trust threshold — see lib/whoop-forecast-kcal.js). Was
+// resolveDayTypeAwareKcalBasis directly (#1099) — switched so this route can never
+// disagree with /api/recommendations, /api/targets or /api/goals/streaks on the
+// SAME day (BASE RULE) now that those go through the forecast layer too.
+const { resolveKcalBasisWithForecast } = require('../lib/whoop-forecast-kcal')
 
 const TELEGRAM_BOT_TOKEN = '' // notifications disabled per user request
 const TELEGRAM_OWNER_ID = process.env.OWNER_TELEGRAM_ID || '455440443'
@@ -241,18 +246,23 @@ module.exports = function (getDB) {
       // and sugar (WHO: ≤10% of calories; 4 kcal/g).
       // Math lives in lib/nutrition-targets.js — the SAME helper recommendations.js
       // uses, so a limit can never drift between the two surfaces (BASE RULE).
-      // Basis is the STABLE profile target, never the intraday WHOOP burn.
+      // #1504: the basis is STABLE for the whole day EXCEPT once today's live WHOOP
+      // cycle clears the forecast-trust threshold, at which point it becomes a
+      // FORECAST (not the raw partial burn — see lib/whoop-forecast-kcal.js for why
+      // that is not a #1295 regression). `summary.kcal_basis` names which one.
       const profile = await db.collection('personal_profile').findOne({ _type: 'profile' })
-      // #1099: day-type-aware basis (weekday-recurring analog on top of the stable
-      // #1295 basis) — deliberately widens this route's DB footprint to include
-      // `whoop_cycles` (see lib/day-type-kcal.js), which #1396's comment above used
-      // to forbid; #1099's own acceptance criterion (ONE number per date across
+      // #1099/#1504: day-type-aware / WHOOP-forecast basis — deliberately widens this
+      // route's DB footprint to include `whoop_cycles` (always) and, once a live
+      // cycle is forecast-worthy, `activity_plans`/`whoop_workouts` too (see
+      // lib/whoop-forecast-kcal.js), which #1396's comment above used to forbid;
+      // #1099's own acceptance criterion (ONE number per date across
       // /api/recommendations, /api/nutrition/summary, /api/targets and /week)
       // requires it. The query is skipped entirely when `daily_kcal_goal` is an
-      // explicit override (see resolveDayTypeAwareKcalBasis), so the common/no-bump
+      // explicit override (see resolveKcalBasisWithForecast), so the common/no-bump
       // path stays as cheap as before.
-      const kcalBasis = await resolveDayTypeAwareKcalBasis(db, profile, today)
+      const { kcal: kcalBasis, basis: kcalBasisSource } = await resolveKcalBasisWithForecast(db, profile, today)
       summary.kcal_goal = kcalBasis
+      summary.kcal_basis = kcalBasisSource
       summary.deficit_kcal = resolveDeficitKcal(profile)
       summary.sat_fat_goal_g = satFatLimitG(kcalBasis)
       summary.sat_fat_status = satFatStatus(summary.sat_fat_g, summary.sat_fat_goal_g)
