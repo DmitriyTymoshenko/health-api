@@ -123,22 +123,67 @@ describe('Contract (#1530) — GET /api/life/habits/:id', () => {
 })
 
 describe('Contract (#1530) — GET /api/life/profile', () => {
-  it('matches Profile', async () => {
-    const { app } = makeApp({
-      profile: [
-        {
-          version: 1,
-          source: 'vault:EN/00-09 System & Personal/01 About/dmytro-profile.md#51.01',
-          strengths: [{ key: 'learner', name: 'Learner', description: 'x' }],
-          dominant_domain: 'Стратегічне мислення',
-          leadership_style: 'Аналітик-стратег',
-          balance_formula: { label: 'x', components: [] },
-        },
-      ],
-    })
+  // Real shape, measured live 2026-10-01 against
+  // https://srv1532186.hstgr.cloud/me/api-life/api/life/profile (QA
+  // BLOCKED Max/Codex #8918 unblock condition item 1): 8 root fields, all
+  // required — `_id`/`updated_at` are NOT optional, the singleton always
+  // carries them (Mongo auto _id + upsert's $set updated_at).
+  const LIVE_PROFILE_SEED = {
+    _id: new ObjectId(),
+    version: 1,
+    source: 'vault:EN/00-09 System & Personal/01 About/dmytro-profile.md#51.01',
+    strengths: [{ key: 'learner', name: 'Learner', description: 'x' }],
+    dominant_domain: 'Стратегічне мислення',
+    leadership_style: 'Аналітик-стратег',
+    balance_formula: {
+      label: 'Аналітика + Дія + Довіра = Ріст',
+      components: [{ key: 'analytics', label: 'Аналітика', description: 'дає силу приймати розумні рішення' }],
+    },
+    updated_at: new Date(),
+  }
+
+  it('matches Profile (all 8 live root fields required, additionalProperties:false)', async () => {
+    const { app } = makeApp({ profile: [LIVE_PROFILE_SEED] })
     const res = await request(app).get('/api/life/profile')
     expect(res.status).toBe(200)
     assertMatchesContract('Profile', res.body)
+  })
+
+  // RED-FIRST PROOF (#1530 fix-cycle, QA BLOCKED Max/Codex #8918): this is
+  // Max's exact negative probe. Against the PRE-FIX schema (git HEAD before
+  // this commit — `definitions/Profile` had no `additionalProperties:false`
+  // anywhere) this payload validated `valid=true, errors=null` — reproduced
+  // independently via a direct ajv compile of `git show HEAD:contracts/
+  // life-contracts.schema.json` before writing this test. After the fix it
+  // MUST throw.
+  it('rejects an unexpected ROOT field (Max\'s probe #8918)', () => {
+    const payload = {
+      ...LIVE_PROFILE_SEED,
+      _id: String(LIVE_PROFILE_SEED._id),
+      updated_at: LIVE_PROFILE_SEED.updated_at.toISOString(),
+      unexpected_root_field: 'passes',
+    }
+    expect(() => assertMatchesContract('Profile', payload)).toThrow(/additionalProperties|unexpected_root_field/)
+  })
+
+  it('rejects an unexpected NESTED field on strengths[] (Max\'s probe #8918)', () => {
+    const payload = {
+      ...LIVE_PROFILE_SEED,
+      _id: String(LIVE_PROFILE_SEED._id),
+      updated_at: LIVE_PROFILE_SEED.updated_at.toISOString(),
+      strengths: [{ key: 'learner', name: 'Learner', description: 'x', extra_strength_field: 'passes' }],
+    }
+    expect(() => assertMatchesContract('Profile', payload)).toThrow(/additionalProperties|extra_strength_field/)
+  })
+
+  it('rejects balance_formula.components[] as bare strings (the real mockLifeApi.js bug this fix-cycle found)', () => {
+    const payload = {
+      ...LIVE_PROFILE_SEED,
+      _id: String(LIVE_PROFILE_SEED._id),
+      updated_at: LIVE_PROFILE_SEED.updated_at.toISOString(),
+      balance_formula: { label: 'x', components: ['Аналітика', 'Дія', 'Довіра'] },
+    }
+    expect(() => assertMatchesContract('Profile', payload)).toThrow()
   })
 })
 
