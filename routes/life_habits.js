@@ -17,6 +17,30 @@ function toObjectId(id) {
   return new ObjectId(id)
 }
 
+// #1524 — embeds each habit's ACTIVE rules (same grouping pattern as
+// `/today`'s `rulesByHabit`, routes/life_habits.js below, but without
+// day/check since this is not day-scoped). Filters by `habit_id` only (never
+// by the habit's own `archived_at`), so it returns the same rule set for an
+// archived habit as for a live one — HabitsPage's Archive tab needs this too
+// (`/today` can't help there: it hard-filters `archived_at: null`).
+async function attachActiveRules(db, habits) {
+  const habitIds = habits.map((h) => h._id)
+  const activeRules = habitIds.length
+    ? await db
+        .collection('life_habit_rules')
+        .find({ habit_id: { $in: habitIds }, active: true })
+        .sort({ order: 1 })
+        .toArray()
+    : []
+  const rulesByHabit = {}
+  for (const rule of activeRules) {
+    const key = String(rule.habit_id)
+    if (!rulesByHabit[key]) rulesByHabit[key] = []
+    rulesByHabit[key].push(rule)
+  }
+  return habits.map((habit) => ({ ...habit, rules: rulesByHabit[String(habit._id)] || [] }))
+}
+
 module.exports = function (getDB) {
   const router = Router()
 
@@ -25,6 +49,7 @@ module.exports = function (getDB) {
   // GET /api/life/habits?type=&active=
   // `active` (optional): 'true' (default) -> only non-archived; 'false' ->
   // only archived; 'all' -> no filter. `type` (optional): 'build'|'break'.
+  // #1524: each habit carries its embedded active `rules[]`.
   router.get('/habits', async (req, res) => {
     try {
       const db = getDB()
@@ -34,13 +59,13 @@ module.exports = function (getDB) {
       if (activeParam === 'false') filter.archived_at = { $ne: null }
       else if (activeParam !== 'all') filter.archived_at = null // default
       const data = await db.collection('life_habits').find(filter).sort({ created_at: 1 }).toArray()
-      res.json(data)
+      res.json(await attachActiveRules(db, data))
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
   })
 
-  // GET /api/life/habits/:id
+  // GET /api/life/habits/:id — #1524: embedded active `rules[]`.
   router.get('/habits/:id', async (req, res) => {
     try {
       const id = toObjectId(req.params.id)
@@ -48,7 +73,8 @@ module.exports = function (getDB) {
       const db = getDB()
       const doc = await db.collection('life_habits').findOne({ _id: id })
       if (!doc) return res.status(404).json({ error: 'Not found' })
-      res.json(doc)
+      const [withRules] = await attachActiveRules(db, [doc])
+      res.json(withRules)
     } catch (err) {
       res.status(500).json({ error: err.message })
     }

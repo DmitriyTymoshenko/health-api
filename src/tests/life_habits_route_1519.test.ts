@@ -213,6 +213,86 @@ describe('POST /api/life/rules/:id/check — upsert by (rule_id, day)', () => {
   })
 })
 
+describe('GET /api/life/habits and /api/life/habits/:id — embedded rules[] (#1524)', () => {
+  it('GET /habits embeds each habit\'s active rules, including an ARCHIVED habit\'s rules', async () => {
+    const liveHabitId = new ObjectId()
+    const archivedHabitId = new ObjectId()
+    const liveRuleId = new ObjectId()
+    const archivedHabitRuleId = new ObjectId()
+    const inactiveRuleId = new ObjectId()
+    const { app } = makeApp({
+      habits: [
+        { _id: liveHabitId, type: 'build', name: 'Читати', implementation: 'x', active: true, archived_at: null },
+        {
+          _id: archivedHabitId,
+          type: 'build',
+          name: 'Стара звичка',
+          implementation: 'y',
+          active: false,
+          archived_at: new Date('2026-09-20T00:00:00.000Z'),
+        },
+      ],
+      rules: [
+        { _id: liveRuleId, habit_id: liveHabitId, text: 'Прочитати сторінку', order: 1, active: true, archived_at: null },
+        { _id: inactiveRuleId, habit_id: liveHabitId, text: 'Старе правило', order: 2, active: false, archived_at: new Date() },
+        {
+          _id: archivedHabitRuleId,
+          habit_id: archivedHabitId,
+          text: 'Правило архівної звички',
+          order: 1,
+          active: true,
+          archived_at: null,
+        },
+      ],
+    })
+
+    // default active=true -> only the live habit, with only its ACTIVE rule
+    const liveRes = await request(app).get('/api/life/habits')
+    expect(liveRes.status).toBe(200)
+    expect(liveRes.body.length).toBe(1)
+    expect(liveRes.body[0]._id).toBe(String(liveHabitId))
+    expect(liveRes.body[0].rules.length).toBe(1)
+    expect(liveRes.body[0].rules[0]._id).toBe(String(liveRuleId))
+
+    // active=false -> only the archived habit, still carrying its own active rule
+    const archivedRes = await request(app).get('/api/life/habits').query({ active: 'false' })
+    expect(archivedRes.status).toBe(200)
+    expect(archivedRes.body.length).toBe(1)
+    expect(archivedRes.body[0]._id).toBe(String(archivedHabitId))
+    expect(archivedRes.body[0].rules.length).toBe(1)
+    expect(archivedRes.body[0].rules[0]._id).toBe(String(archivedHabitRuleId))
+  })
+
+  it('GET /habits returns rules: [] for a habit with no active rules', async () => {
+    const { app } = makeApp()
+    await request(app).post('/api/life/habits').send({ type: 'build', name: 'x', implementation: 'y' })
+    const res = await request(app).get('/api/life/habits')
+    expect(res.status).toBe(200)
+    expect(res.body[0].rules).toEqual([])
+  })
+
+  it('GET /habits/:id embeds the single habit\'s active rules', async () => {
+    const { app } = makeApp()
+    const habitRes = await request(app)
+      .post('/api/life/habits')
+      .send({ type: 'break', name: 'Менше цукру', implementation: 'x' })
+    const habitId = habitRes.body._id
+    const ruleRes = await request(app).post(`/api/life/habits/${habitId}/rules`).send({ text: 'Не їсти солодке' })
+
+    const res = await request(app).get(`/api/life/habits/${habitId}`)
+    expect(res.status).toBe(200)
+    expect(res.body.rules.length).toBe(1)
+    expect(res.body.rules[0]._id).toBe(ruleRes.body._id)
+    expect(res.body.rules[0].text).toBe('Не їсти солодке')
+  })
+
+  it('GET /habits/:id — 404 for a non-existent id (unaffected by the rules-embedding change)', async () => {
+    const { app } = makeApp()
+    const res = await request(app).get(`/api/life/habits/${new ObjectId()}`)
+    expect(res.status).toBe(404)
+  })
+})
+
 describe('GET /api/life/today', () => {
   it('400 on an invalid day', async () => {
     const { app } = makeApp()
