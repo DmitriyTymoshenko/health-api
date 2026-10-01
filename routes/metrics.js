@@ -1,5 +1,6 @@
 const { Router } = require('express')
 const { requireAnyField, validateDate } = require('../lib/validate')
+const { todayKyiv, addDaysToKyivDay } = require('../lib/kyiv-day')
 
 module.exports = function (getDB) {
   const router = Router()
@@ -8,9 +9,18 @@ module.exports = function (getDB) {
   router.get('/', async (req, res) => {
     try {
       const db = getDB()
-      const { limit = 30, skip = 0 } = req.query
+      const { skip = 0 } = req.query
+      let limit = req.query.limit === undefined ? 30 : req.query.limit
+      // #1640: honour ?days=N (clamp 1..365, pattern of nutrition.js /frequent).
+      // Absent/invalid days => no date filter, behaviour unchanged (limit 30).
+      const filter = {}
+      if (req.query.days !== undefined) {
+        const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 365)
+        if (req.query.limit === undefined) limit = days // one doc per day
+        filter.date = { $gte: addDaysToKyivDay(todayKyiv(), -(days - 1)) }
+      }
       const data = await db.collection('daily_metrics')
-        .find({})
+        .find(filter)
         .sort({ date: -1 })
         .skip(Number(skip))
         .limit(Number(limit))

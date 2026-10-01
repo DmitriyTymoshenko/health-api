@@ -143,3 +143,60 @@ describe('metrics — health data ranges sanity', () => {
 })
 
 export {};
+
+// --- #1640: real route, ?days= honoured ---
+import request from 'supertest'
+import express from 'express'
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const metricsRouter = require('../../routes/metrics')
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { todayKyiv, addDaysToKyivDay } = require('../../lib/kyiv-day')
+
+function appWith(rows: { date: string }[]) {
+  const calls: { filter: any; limit?: number }[] = []
+  const getDB = () => ({
+    collection: () => ({
+      find: (filter: any) => {
+        const rec: { filter: any; limit?: number } = { filter }
+        calls.push(rec)
+        let out = rows.filter(r => !filter?.date?.$gte || r.date >= filter.date.$gte)
+        const cur: any = {
+          sort: () => cur,
+          skip: () => cur,
+          limit: (n: number) => { rec.limit = n; out = out.slice(0, n); return cur },
+          toArray: async () => out,
+        }
+        return cur
+      },
+    }),
+  })
+  const app = express()
+  app.use('/api/metrics', metricsRouter(getDB))
+  return { app, calls }
+}
+
+describe('GET /api/metrics ?days= (#1640)', () => {
+  const t = todayKyiv()
+  const rows = Array.from({ length: 40 }, (_, i) => ({ date: addDaysToKyivDay(t, -i) }))
+
+  it('days=1 returns at most 1 day', async () => {
+    const { app } = appWith(rows)
+    const res = await request(app).get('/api/metrics?days=1')
+    expect(res.status).toBe(200)
+    expect(res.body.length).toBeLessThanOrEqual(1)
+  })
+
+  it('days=3 returns 3 days', async () => {
+    const { app, calls } = appWith(rows)
+    const res = await request(app).get('/api/metrics?days=3')
+    expect(res.body.length).toBe(3)
+    expect(calls[0].filter.date.$gte).toBe(addDaysToKyivDay(t, -2))
+  })
+
+  it('no days param: unchanged (no filter, 30 records)', async () => {
+    const { app, calls } = appWith(rows)
+    const res = await request(app).get('/api/metrics')
+    expect(calls[0].filter).toEqual({})
+    expect(res.body.length).toBe(30)
+  })
+})
