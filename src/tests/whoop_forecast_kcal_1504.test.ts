@@ -242,6 +242,23 @@ describe('resolveKcalBasisWithForecast (#1504) — the forecast formula, hand-ve
     // no-new-data move must never approach the old bug's ~1000 kcal jump.
     expect(Math.abs(earlier.kcal - later.kcal)).toBeLessThan(700)
   })
+
+  it('#1595: with cycle.synced_at the target is CONSTANT between syncs (anchored at the sync, not at now)', async () => {
+    const synced_at = kyivNow('19:23')
+    const mk = () => makeDb({ whoopCycles: [{ date: TODAY, calories_burned: 2038, end: null, synced_at }] })
+    const a = await resolveKcalBasisWithForecast(mk(), PROFILE, TODAY, { now: kyivNow('19:24') })
+    const b = await resolveKcalBasisWithForecast(mk(), PROFILE, TODAY, { now: kyivNow('23:30') })
+    expect(a.kcal).toBe(b.kcal)
+    // 2038 + 100 * (24 - 19.3833) - 500 = 2000
+    expect(a.kcal).toBe(Math.round(2038 + 100 * (24 - kyivHoursSinceMidnight(synced_at)) - 500))
+  })
+
+  it('#1595: synced_at of another Kyiv day or in the future is ignored (falls back to now)', async () => {
+    const stale = new Date(kyivNow('13:23').getTime() - 24 * 3600 * 1000)
+    const db = makeDb({ whoopCycles: [{ date: TODAY, calories_burned: 2038, end: null, synced_at: stale }] })
+    const r = await resolveKcalBasisWithForecast(db, PROFILE, TODAY, { now: kyivNow('19:23') })
+    expect(r.kcal).toBe(Math.round(2038 + 100 * (24 - kyivHoursSinceMidnight(kyivNow('19:23'))) - 500))
+  })
 })
 
 export {}

@@ -112,7 +112,8 @@ module.exports = function (getDB) {
       // source dead since 06.04, supplements no longer per-day tracked.
       const goals = {
         calories_limit: targets.kcal,
-        protein_min: proteinGoal?.target_value || targets.protein_g,
+        // #1595: streak floor = the weight-derived protein MIN (resolver), never the point (186 g) nor a stale goals doc.
+        protein_min: targets.protein_min_g,
         // #1504 — 'day_type_avg' | 'whoop_forecast', passed through unchanged. NOTE:
         // this reflects the basis for `requestedDate` ONLY (today, by default) —
         // `calories_limit` above is applied flatly across the whole 90-day streak

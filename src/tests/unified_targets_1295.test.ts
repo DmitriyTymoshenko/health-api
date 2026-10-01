@@ -220,7 +220,9 @@ describe('#1295 — one date ⇒ one calorie/protein/water/weight value across e
     expect(targets.body.protein_g).toBe(EXPECTED_PROTEIN_G)
     expect(recommendations.body.summary.protein_target).toBe(EXPECTED_PROTEIN_G)
     expect(summary.body.protein_goal_g).toBe(EXPECTED_PROTEIN_G)
-    expect(streaks.body.goals.protein_min).toBe(EXPECTED_PROTEIN_G)
+    // #1595: streak floor is the weight-derived MIN, not the point target.
+    expect(streaks.body.goals.protein_min).toBe(targets.body.protein_min_g)
+    expect(streaks.body.goals.protein_min).toBeLessThan(EXPECTED_PROTEIN_G)
   })
 
   it('water target: /api/targets and /api/water/today agree for the SAME date (flat 1L/30kg, #1298 R4)', async () => {
