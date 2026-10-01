@@ -65,8 +65,82 @@ describe('POST /api/life/habits', () => {
 
   it('400 when a required field is missing', async () => {
     const { app } = makeApp()
-    const res = await request(app).post('/api/life/habits').send({ type: 'build', name: 'x' })
+    const res = await request(app).post('/api/life/habits').send({ type: 'build' }) // missing `name`
     expect(res.status).toBe(400)
+  })
+
+  // #1587 P0-2: `implementation` must be OPTIONAL — both the dashboard form
+  // (HabitFormModal.jsx sends `null` when left blank) and the MCP tool
+  // (mcp-servers/me/index.ts habit_create, `z.string().optional()`, omits
+  // the key entirely) create habits without it. `requireFields` used to
+  // treat BOTH `undefined` and `null` as "missing" and 400 the request.
+  it('implementation is optional — creating a habit without it succeeds (#1587 P0-2)', async () => {
+    const { app } = makeApp()
+    const res = await request(app).post('/api/life/habits').send({ type: 'build', name: 'Пити воду' })
+    expect(res.status).toBe(201)
+    expect(res.body.implementation).toBeNull()
+  })
+
+  it('implementation:null (explicitly sent by the dashboard form when left blank) also succeeds', async () => {
+    const { app } = makeApp()
+    const res = await request(app)
+      .post('/api/life/habits')
+      .send({ type: 'build', name: 'Пити воду', implementation: null })
+    expect(res.status).toBe(201)
+    expect(res.body.implementation).toBeNull()
+  })
+
+  // #1587 P0-2: the dashboard's "create habit" form sends 1-3 rules in the
+  // SAME POST body (HabitFormModal.jsx `rules: activeRules` ->
+  // HabitsPage.jsx `api.createHabit(formState)`) — this route used to only
+  // read habit-level fields and silently drop `rules`, so a dashboard-
+  // created habit always ended up with ZERO active rules.
+  it('rules[] sent at creation time are inserted and embedded in the response (#1587 P0-2)', async () => {
+    const { app, collections } = makeApp()
+    const res = await request(app)
+      .post('/api/life/habits')
+      .send({
+        type: 'build',
+        name: 'Пити воду вранці',
+        rules: [{ text: 'Склянка води до кави' }, { text: 'Пляшка на столі' }],
+      })
+    expect(res.status).toBe(201)
+    expect(res.body.rules.length).toBe(2)
+    expect(res.body.rules[0].text).toBe('Склянка води до кави')
+    expect(res.body.rules[0].order).toBe(1)
+    expect(res.body.rules[1].order).toBe(2)
+
+    const storedRules = collections.life_habit_rules
+      ._docs()
+      .filter((d: any) => String(d.habit_id) === String(res.body._id))
+    expect(storedRules.length).toBe(2)
+    expect(storedRules.every((r: any) => r.active === true)).toBe(true)
+  })
+
+  it('rules[] as bare strings (not {text}) are also accepted', async () => {
+    const { app } = makeApp()
+    const res = await request(app)
+      .post('/api/life/habits')
+      .send({ type: 'build', name: 'x', rules: ['Правило А'] })
+    expect(res.status).toBe(201)
+    expect(res.body.rules.length).toBe(1)
+    expect(res.body.rules[0].text).toBe('Правило А')
+  })
+
+  it('rules[] beyond the 3-active cap are truncated, never rejected', async () => {
+    const { app } = makeApp()
+    const res = await request(app)
+      .post('/api/life/habits')
+      .send({ type: 'build', name: 'x', rules: ['a', 'b', 'c', 'd'] })
+    expect(res.status).toBe(201)
+    expect(res.body.rules.length).toBe(3)
+  })
+
+  it('a missing/empty rules[] still creates the habit with rules: []', async () => {
+    const { app } = makeApp()
+    const res = await request(app).post('/api/life/habits').send({ type: 'build', name: 'x' })
+    expect(res.status).toBe(201)
+    expect(res.body.rules).toEqual([])
   })
 
   it('identity/two_minute are forced to null for a break habit even if sent', async () => {
@@ -209,6 +283,112 @@ describe('POST /api/life/rules/:id/check — upsert by (rule_id, day)', () => {
     const res = await request(app)
       .post(`/api/life/rules/${ruleRes.body._id}/check`)
       .send({ day: '01-10-2026', done: true, source: 'dashboard' })
+    expect(res.status).toBe(400)
+  })
+})
+
+describe('DELETE /api/life/rules/:id/check — clear a check-in (#1587 P0-1)', () => {
+  it('RED: a POST done:false can never cycle back to done:true (the bug this endpoint fixes)', async () => {
+    const { app } = makeApp()
+    const habitRes = await request(app).post('/api/life/habits').send({ type: 'build', name: 'x' })
+    const ruleRes = await request(app)
+      .post(`/api/life/habits/${habitRes.body._id}/rules`)
+      .send({ text: 'r' })
+    const ruleId = ruleRes.body._id
+
+    // Reproduces HabitRow.jsx's OLD third cycle step: POST done:false,
+    // two_minute_version:false (what the UI used to send instead of DELETE).
+    await request(app).post(`/api/life/rules/${ruleId}/check`).send({
+      day: '2026-10-01', done: false, two_minute_version: false, source: 'dashboard',
+    })
+    const stuck = await request(app).get('/api/life/today').query({ day: '2026-10-01' })
+    // This IS the bug: the rule "looks empty" to a naive reader (done:false,
+    // not done:true) but is NOT the neutral {done:null} state — it is a
+    // permanent explicit failure that a build-habit cycle can never recover
+    // from via POST alone (no false->true branch exists).
+    expect(stuck.body.habits[0].rules[0].check).toEqual({ done: false, two_minute_version: false })
+    expect(stuck.body.habits[0].rules[0].check.done).not.toBeNull()
+  })
+
+  it('GREEN: DELETE restores the neutral {done:null, two_minute_version:null} state', async () => {
+    const { app } = makeApp()
+    const habitRes = await request(app).post('/api/life/habits').send({ type: 'build', name: 'x' })
+    const ruleRes = await request(app)
+      .post(`/api/life/habits/${habitRes.body._id}/rules`)
+      .send({ text: 'r' })
+    const ruleId = ruleRes.body._id
+
+    await request(app)
+      .post(`/api/life/rules/${ruleId}/check`)
+      .send({ day: '2026-10-01', done: true, two_minute_version: true, source: 'dashboard' })
+
+    const del = await request(app).delete(`/api/life/rules/${ruleId}/check`).query({ day: '2026-10-01' })
+    expect(del.status).toBe(200)
+    expect(del.body.success).toBe(true)
+
+    const after = await request(app).get('/api/life/today').query({ day: '2026-10-01' })
+    expect(after.body.habits[0].rules[0].check).toEqual({ done: null, two_minute_version: null })
+    expect(after.body.habits[0].done_today).toBeNull()
+  })
+
+  it('scopes the clear to ONE day — other days keep their own check', async () => {
+    const { app } = makeApp()
+    const habitRes = await request(app).post('/api/life/habits').send({ type: 'build', name: 'x' })
+    const ruleRes = await request(app)
+      .post(`/api/life/habits/${habitRes.body._id}/rules`)
+      .send({ text: 'r' })
+    const ruleId = ruleRes.body._id
+
+    await request(app).post(`/api/life/rules/${ruleId}/check`).send({ day: '2026-10-01', done: true, source: 'dashboard' })
+    await request(app).post(`/api/life/rules/${ruleId}/check`).send({ day: '2026-10-02', done: true, source: 'dashboard' })
+
+    await request(app).delete(`/api/life/rules/${ruleId}/check`).query({ day: '2026-10-01' })
+
+    const day1 = await request(app).get('/api/life/today').query({ day: '2026-10-01' })
+    const day2 = await request(app).get('/api/life/today').query({ day: '2026-10-02' })
+    expect(day1.body.habits[0].rules[0].check.done).toBeNull()
+    expect(day2.body.habits[0].rules[0].check.done).toBe(true)
+  })
+
+  it('defaults day to today (Kyiv) when the query param is omitted', async () => {
+    const { app } = makeApp()
+    const habitRes = await request(app).post('/api/life/habits').send({ type: 'build', name: 'x' })
+    const ruleRes = await request(app)
+      .post(`/api/life/habits/${habitRes.body._id}/rules`)
+      .send({ text: 'r' })
+    const res = await request(app).delete(`/api/life/rules/${ruleRes.body._id}/check`)
+    expect(res.status).toBe(200)
+    expect(res.body.success).toBe(true)
+  })
+
+  it('is idempotent — clearing a check-in that never existed still returns 200 success', async () => {
+    const { app } = makeApp()
+    const habitRes = await request(app).post('/api/life/habits').send({ type: 'build', name: 'x' })
+    const ruleRes = await request(app)
+      .post(`/api/life/habits/${habitRes.body._id}/rules`)
+      .send({ text: 'r' })
+    const res = await request(app)
+      .delete(`/api/life/rules/${ruleRes.body._id}/check`)
+      .query({ day: '2026-10-01' })
+    expect(res.status).toBe(200)
+    expect(res.body.success).toBe(true)
+  })
+
+  it('404 for a non-existent rule id', async () => {
+    const { app } = makeApp()
+    const res = await request(app).delete(`/api/life/rules/${new ObjectId()}/check`)
+    expect(res.status).toBe(404)
+  })
+
+  it('400 on a malformed day', async () => {
+    const { app } = makeApp()
+    const habitRes = await request(app).post('/api/life/habits').send({ type: 'build', name: 'x' })
+    const ruleRes = await request(app)
+      .post(`/api/life/habits/${habitRes.body._id}/rules`)
+      .send({ text: 'r' })
+    const res = await request(app)
+      .delete(`/api/life/rules/${ruleRes.body._id}/check`)
+      .query({ day: '01-10-2026' })
     expect(res.status).toBe(400)
   })
 })

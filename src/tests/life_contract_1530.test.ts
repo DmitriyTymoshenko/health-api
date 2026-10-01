@@ -122,6 +122,23 @@ describe('Contract (#1530) — GET /api/life/habits/:id', () => {
   })
 })
 
+describe('Contract (#1530/#1587) — implementation:null still matches HabitListItem', () => {
+  // #1587 P0-2 made `implementation` optional; the contract schema's
+  // `implementation` was `"type":"string"` (not nullable) until this same
+  // task — this test proves the actual live shape (a habit created without
+  // an implementation intention) still passes additionalProperties:false
+  // strict validation, not just that the field is present.
+  it('a habit created without implementation (null) matches HabitListItem', async () => {
+    const { app } = makeApp()
+    const habitRes = await request(app).post('/api/life/habits').send({ type: 'build', name: 'Пити воду' })
+    expect(habitRes.body.implementation).toBeNull()
+
+    const res = await request(app).get(`/api/life/habits/${habitRes.body._id}`)
+    expect(res.status).toBe(200)
+    assertMatchesContract('HabitListItem', res.body)
+  })
+})
+
 describe('Contract (#1530) — GET /api/life/profile', () => {
   // Real shape, measured live 2026-10-01 against
   // https://srv1532186.hstgr.cloud/me/api-life/api/life/profile (QA

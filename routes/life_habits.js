@@ -85,7 +85,18 @@ module.exports = function (getDB) {
   // that — it just stores what the build/break-aware form sends); MVP
   // frequency is always daily regardless of what the client sends (SPEC §1
   // scope: "тільки щодня").
-  router.post('/habits', requireFields('type', 'name', 'implementation'), async (req, res) => {
+  //
+  // #1587 P0-2: `implementation` is OPTIONAL, not required — the MCP tool
+  // (mcp-servers/me/index.ts habit_create) already treats it as optional
+  // (`z.string().optional()`, omitted from the body entirely when unset) and
+  // the dashboard form sends `null` when the field is left blank
+  // (HabitFormModal.jsx: `implementation: implementation.trim() || null`).
+  // `requireFields` rejects both `undefined` AND `null` as "missing", so the
+  // old `requireFields('type','name','implementation')` 400'd on EVERY habit
+  // created without an implementation intention — both from the dashboard
+  // and from Lisa via MCP. Mirrors `contracts/life-contracts.schema.json`
+  // (`implementation` is `["string","null"]`, not just `"string"`).
+  router.post('/habits', requireFields('type', 'name'), async (req, res) => {
     try {
       if (req.body.type !== 'build' && req.body.type !== 'break') {
         return res.status(400).json({ error: "type must be 'build' or 'break'" })
@@ -96,7 +107,7 @@ module.exports = function (getDB) {
         name: req.body.name,
         sphere: req.body.sphere ?? null,
         identity: req.body.type === 'build' ? req.body.identity ?? null : null,
-        implementation: req.body.implementation,
+        implementation: req.body.implementation ?? null,
         two_minute: req.body.type === 'build' ? req.body.two_minute ?? null : null,
         frequency: { kind: 'daily' },
         active: true,
@@ -104,7 +115,37 @@ module.exports = function (getDB) {
         archived_at: null,
       }
       const result = await db.collection('life_habits').insertOne(doc)
-      res.status(201).json({ ...doc, _id: result.insertedId })
+      const habitId = result.insertedId
+
+      // #1587 P0-2: the dashboard's "create habit" form collects 1-3 rules
+      // in the SAME form (HabitFormModal.jsx) and sends them as `rules: [{
+      // text }]` inside this SAME POST body (HabitsPage.jsx `handleSubmit` ->
+      // `api.createHabit(formState)`, see me-dashboard/src/api/lifeApi.js
+      // `createHabit`) — this route used to only read
+      // type/name/sphere/identity/implementation/two_minute and silently
+      // drop `rules`, so every dashboard-created habit shipped with ZERO
+      // rules (live-confirmed 2026-10-01: GET /habits after a dashboard
+      // "Зберегти звичку" showed `rules: []`). Insert them here, same
+      // text-extraction (`string` or `{text}`) and 3-rule cap as
+      // `POST /habits/:habitId/rules` below.
+      const rulesIn = Array.isArray(req.body.rules) ? req.body.rules.slice(0, MAX_ACTIVE_RULES_PER_HABIT) : []
+      const insertedRules = []
+      for (let i = 0; i < rulesIn.length; i++) {
+        const text = typeof rulesIn[i] === 'string' ? rulesIn[i] : rulesIn[i]?.text
+        if (!text) continue
+        const ruleDoc = {
+          habit_id: habitId,
+          text,
+          order: i + 1,
+          active: true,
+          created_at: new Date(),
+          archived_at: null,
+        }
+        const ruleResult = await db.collection('life_habit_rules').insertOne(ruleDoc)
+        insertedRules.push({ ...ruleDoc, _id: ruleResult.insertedId })
+      }
+
+      res.status(201).json({ ...doc, _id: habitId, rules: insertedRules })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -274,6 +315,41 @@ module.exports = function (getDB) {
         { upsert: true, returnDocument: 'after' }
       )
       res.json(result)
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // DELETE /api/life/rules/:id/check?day= — clear a rule's check-in for a
+  // day, returning it to the neutral "no check-in yet" state
+  // (lib/life-rules.js::ruleCheckState treats an absent doc as
+  // `{done:null, two_minute_version:null}`). `day` defaults to today (Kyiv).
+  //
+  // #1587 P0-1: this is the "back to empty" step of HabitRow.jsx's build
+  // cycle (empty -> done -> 2-min version -> empty). Before this endpoint
+  // existed, the frontend reached "empty" by POSTing
+  // `{done:false, two_minute_version:false}` — which LOOKS empty in the UI
+  // (no cls/symbol matches) but stores an EXPLICIT "not done" check-in, not
+  // an absence of one. Every click after that first "fake empty" state fed
+  // `check.done === false` back into `cycle()`, which has no branch for
+  // "false -> true" on a build habit — the rule was then stuck rendering
+  // empty-but-failed forever, with no way to get back to ✓. Deleting the
+  // check doc (not POSTing a false one) is the only way to genuinely return
+  // to the neutral state `requireFields('done','source')` on the POST route
+  // can never accept (`done:null` is rejected as "missing").
+  router.delete('/rules/:id/check', async (req, res) => {
+    try {
+      const ruleId = toObjectId(req.params.id)
+      if (!ruleId) return res.status(404).json({ error: 'Rule not found' })
+      const day = req.query.day || todayKyiv()
+      if (!isValidKyivDayFormat(day)) {
+        return res.status(400).json({ error: 'Invalid day format. Use YYYY-MM-DD' })
+      }
+      const db = getDB()
+      const rule = await db.collection('life_habit_rules').findOne({ _id: ruleId })
+      if (!rule) return res.status(404).json({ error: 'Rule not found' })
+      await db.collection('life_rule_checks').deleteOne({ rule_id: ruleId, day })
+      res.json({ success: true })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }

@@ -8,6 +8,10 @@
  *
  * Deliberately NOT a general Mongo emulator — only the operators the
  * life_* routes actually issue: plain equality, `$ne`, `$in`, `$set`.
+ *
+ * #1587: added `deleteOne` for the new `DELETE /rules/:id/check` route
+ * (routes/life_habits.js) — same minimal-surface principle as the rest of
+ * this stub.
  */
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -73,6 +77,12 @@ export function makeMockCollection(initial: Doc[] = []) {
       const stored = { ...doc, _id }
       docs.push(stored)
       return { insertedId: _id }
+    },
+    async deleteOne(filter: Doc) {
+      const idx = docs.findIndex((d) => matches(d, filter))
+      if (idx === -1) return { deletedCount: 0 }
+      docs.splice(idx, 1)
+      return { deletedCount: 1 }
     },
     async findOneAndUpdate(filter: Doc, update: Doc, opts: Doc = {}) {
       let doc = docs.find((d) => matches(d, filter))
