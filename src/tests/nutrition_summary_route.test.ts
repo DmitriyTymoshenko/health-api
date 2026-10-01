@@ -204,7 +204,7 @@ describe('GET /api/nutrition/summary — route wiring of the sat_fat_* / sugar_*
   })
 
   it('the same wiring holds on the /summary/today alias (it delegates to summaryHandler)', async () => {
-    const today = new Date().toISOString().split('T')[0]
+    const today = require('../../lib/kyiv-day').todayKyiv()
     const app = makeApp({
       profile: PROFILE,
       latestWeight: WEIGHT,
