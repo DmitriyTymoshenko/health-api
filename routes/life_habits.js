@@ -399,7 +399,14 @@ module.exports = function (getDB) {
       // created_at up to (and including) `day`, so pull the full history in
       // one query per habit's rule set rather than N+1 per rule.
       const breakHabits = habits.filter((h) => h.type === 'break')
-      const breakRuleIds = breakHabits.flatMap((h) => (rulesByHabit[String(h._id)] || []).map((r) => r._id))
+      // #1614 p.7: failures on ARCHIVED rules still count (else archiving a rule
+      // that carried a failure inflates days_clean) -> pull ALL rules of break
+      // habits, not only active ones.
+      const breakHabitIds = breakHabits.map((h) => h._id)
+      const allBreakRules = breakHabitIds.length
+        ? await db.collection('life_habit_rules').find({ habit_id: { $in: breakHabitIds } }).toArray()
+        : []
+      const breakRuleIds = allBreakRules.map((r) => r._id)
       const historyChecks = breakRuleIds.length
         ? await db
             .collection('life_rule_checks')
@@ -408,7 +415,7 @@ module.exports = function (getDB) {
         : []
       const failureDaysByHabit = {}
       for (const c of historyChecks) {
-        const rule = allActiveRules.find((r) => String(r._id) === String(c.rule_id))
+        const rule = allBreakRules.find((r) => String(r._id) === String(c.rule_id))
         if (!rule) continue
         const key = String(rule.habit_id)
         if (!failureDaysByHabit[key]) failureDaysByHabit[key] = new Set()

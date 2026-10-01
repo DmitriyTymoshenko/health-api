@@ -547,6 +547,25 @@ describe('GET /api/life/today', () => {
     await expectDaysClean('2026-10-01', 1)
   })
 
+  it('#1614 p.7: failure recorded on an ARCHIVED rule still resets days_clean', async () => {
+    const habitId = new ObjectId()
+    const liveRule = new ObjectId()
+    const archivedRule = new ObjectId()
+    const { app } = makeApp({
+      habits: [
+        { _id: habitId, type: 'break', name: 'Less sugar', implementation: 'x',
+          created_at: new Date('2026-09-27T12:00:00.000Z'), archived_at: null },
+      ],
+      rules: [
+        { _id: liveRule, habit_id: habitId, text: 'No sugar', order: 1, active: true, archived_at: null },
+        { _id: archivedRule, habit_id: habitId, text: 'Old rule', order: 2, active: false, archived_at: new Date('2026-10-01T09:00:00.000Z') },
+      ],
+      checks: [{ rule_id: archivedRule, habit_id: habitId, day: '2026-09-30', done: false }],
+    })
+    const res = await request(app).get('/api/life/today').query({ day: '2026-10-01' })
+    expect(res.body.habits[0].days_clean).toBe(1) // failure 09-30 counted -> only 10-01 clean
+  })
+
   it('days_clean is null for a build habit (only meaningful for break)', async () => {
     const { app } = makeApp()
     await request(app).post('/api/life/habits').send({ type: 'build', name: 'x', implementation: 'y' })
