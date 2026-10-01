@@ -1,4 +1,5 @@
 const { Router } = require('express')
+const { todayKyiv } = require('../lib/kyiv-day')
 
 module.exports = function (getDB) {
   const router = Router()
@@ -24,7 +25,7 @@ module.exports = function (getDB) {
   router.get('/today', async (req, res) => {
     try {
       const db = getDB()
-      const today = new Date().toISOString().split('T')[0]
+      const today = todayKyiv()
       const data = await db.collection('supplements_log')
         .find({ date: today })
         .sort({ timing: 1 })
@@ -40,7 +41,7 @@ module.exports = function (getDB) {
     try {
       const db = getDB()
       const doc = req.body
-      if (!doc.date) doc.date = new Date().toISOString().split('T')[0]
+      if (!doc.date) doc.date = todayKyiv()
       if (doc.taken === undefined) doc.taken = false
 
       const result = await db.collection('supplements_log').insertOne(doc)

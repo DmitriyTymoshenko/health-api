@@ -1,4 +1,5 @@
 const { Router } = require('express')
+const { todayKyiv } = require('../lib/kyiv-day')
 const https = require('https')
 const { requireFields, validateDate, normalizeNutrition } = require('../lib/validate')
 const {
@@ -80,7 +81,7 @@ async function sendMealTelegramNotification(db, doc) {
   try {
     if (!TELEGRAM_BOT_TOKEN) return
 
-    const today = doc.date || new Date().toISOString().split('T')[0]
+    const today = doc.date || todayKyiv()
 
     // Get today's totals
     const todayEntries = await db.collection('nutrition_log').find({ date: today }).toArray()
@@ -217,7 +218,7 @@ module.exports = function (getDB) {
   router.get('/today', async (req, res) => {
     try {
       const db = getDB()
-      const today = req.query.date || new Date().toISOString().split('T')[0]
+      const today = req.query.date || todayKyiv()
       const data = await db.collection('nutrition_log')
         .find({ date: today })
         .sort({ meal_type: 1 })
@@ -229,12 +230,12 @@ module.exports = function (getDB) {
   })
 
   // GET /api/nutrition/summary?date=YYYY-MM-DD (also /summary/today for backward compat)
-  router.get('/summary/today', async (req, res) => { req.query.date = new Date().toISOString().split('T')[0]; return summaryHandler(req, res) })
+  router.get('/summary/today', async (req, res) => { req.query.date = todayKyiv(); return summaryHandler(req, res) })
   router.get('/summary', summaryHandler)
   async function summaryHandler(req, res) {
     try {
       const db = getDB()
-      const today = req.query.date || new Date().toISOString().split('T')[0]
+      const today = req.query.date || todayKyiv()
       const data = await db.collection('nutrition_log').find({ date: today }).toArray()
 
       // Sums both on-disk formats (flat modern + legacy nested items[]) — see
@@ -323,7 +324,7 @@ module.exports = function (getDB) {
     try {
       const db = getDB()
       const doc = req.body
-      if (!doc.date) doc.date = new Date().toISOString().split('T')[0]
+      if (!doc.date) doc.date = todayKyiv()
       doc.created_at = new Date()
       // Normalize field names: support both protein/fat/carbs and protein_g/fat_g/carbs_g
       if (doc.protein !== undefined && doc.protein_g === undefined) doc.protein_g = doc.protein

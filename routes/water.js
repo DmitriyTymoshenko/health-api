@@ -1,4 +1,5 @@
 const { Router } = require('express')
+const { todayKyiv } = require('../lib/kyiv-day')
 const { checkWaterAndNotify } = require('../notify')
 // #1295 — resolveWaterGoalMl is the ONE named entry point for "water goal, given a
 // weight and a strain" (thin wrapper over notify.js's calcWaterGoal, shared with
@@ -34,7 +35,7 @@ module.exports = function (getDB) {
   router.get('/today', async (req, res) => {
     try {
       const db = getDB()
-      const today = req.query.date || new Date().toISOString().split('T')[0]
+      const today = req.query.date || todayKyiv()
       const data = await db.collection('water_log')
         .find({ date: today })
         .sort({ timestamp: 1 })
@@ -63,7 +64,7 @@ module.exports = function (getDB) {
     try {
       const db = getDB()
       const doc = req.body
-      if (!doc.date) doc.date = new Date().toISOString().split('T')[0]
+      if (!doc.date) doc.date = todayKyiv()
       if (!doc.timestamp) doc.timestamp = new Date()
       else doc.timestamp = new Date(doc.timestamp)
 
