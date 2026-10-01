@@ -68,6 +68,14 @@ async function connectDB() {
   // name — see lib/exercise-dictionaries.js header for why. Unique so a re-run of the
   // migration script (or a future refresh) upserts instead of duplicating.
   await db.collection('exercises_catalog').createIndex({ source_id: 1 }, { unique: true })
+  // #1519 (MISSION /me MVP, SPEC #1518 §3) — life_* indexes. Unique
+  // {rule_id,day} is the DB-level backstop for the check-in upsert in
+  // routes/life_habits.js (POST /rules/:id/check) so a race can never
+  // duplicate a day's check.
+  await db.collection('life_habit_rules').createIndex({ habit_id: 1, active: 1 })
+  await db.collection('life_rule_checks').createIndex({ rule_id: 1, day: 1 }, { unique: true })
+  await db.collection('life_rule_checks').createIndex({ habit_id: 1, day: 1 })
+  await db.collection('life_day_goals').createIndex({ day: 1 })
 
   console.log('Indexes created')
   return db
@@ -327,6 +335,13 @@ app.use('/api/recommendations', require('./routes/recommendations')(getDB))
 app.use('/api/training-program', require('./routes/training_program')(getDB))
 app.use('/api/targets', require('./routes/targets')(getDB)) // #1295 unified day-level targets resolver
 app.use('/api/readiness', require('./routes/readiness')(getDB)) // #1292 Ф3 — readiness badge (recovery + exercise-trend, lower-of-two)
+// #1519 (MISSION /me MVP, SPEC #1518): new `/api/life/*` surface, new
+// `life_*` collections only — `goals`/`lib/targets-resolver.js` untouched.
+// Three files, same mount base (same pattern as supplement_catalog.js +
+// supplement_stack.js both under /api/catalog).
+app.use('/api/life', require('./routes/life_habits')(getDB))
+app.use('/api/life', require('./routes/life_day_goals')(getDB))
+app.use('/api/life', require('./routes/life_profile')(getDB))
 
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }))
