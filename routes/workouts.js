@@ -174,7 +174,8 @@ module.exports = function (getDB) {
       if (!name || !muscle_group) return res.status(400).json({ error: 'name and muscle_group required' })
 
       const col = db.collection('exercises_library')
-      const existing = await col.findOne({ name: { $regex: new RegExp(`^${name}$`, 'i') } })
+      const escapedName = String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const existing = await col.findOne({ name: { $regex: new RegExp(`^${escapedName}$`, 'i') } })
       if (existing) return res.status(409).json({ error: 'Exercise already exists', exercise: existing })
 
       const doc = { name, muscle_group, equipment: equipment || 'other', created_at: new Date() }
