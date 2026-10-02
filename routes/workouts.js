@@ -12,6 +12,7 @@ const {
   backfillWeightUnitInSession,
 } = require('../lib/workout-log-write')
 const { ensureExercisesInLibrary } = require('../lib/exercise-library-register')
+const { canonicalizeExercises } = require('../lib/exercise-alias')
 const { fillBodyweightSets, resolveBodyweightForDate } = require('../lib/bodyweight-fill')
 const { MUSCLE_GROUPS } = require('../lib/exercise-dictionaries')
 const {
@@ -272,7 +273,7 @@ module.exports = function (getDB) {
       if (merged) {
         const fill = mergeLibraryFields(targetDoc, sourceDoc)
         fill.updated_at = new Date()
-        await libCol.updateOne({ name: target }, { $set: fill })
+        await libCol.updateOne({ name: target }, { $set: fill, $addToSet: { aliases: { $each: [source, ...(sourceDoc.aliases || [])] } } }) // #1692 п.2
         await libCol.deleteOne({ name: source })
         exercise = await libCol.findOne({ name: target })
       } else {
@@ -711,6 +712,7 @@ module.exports = function (getDB) {
       // from the owner's latest weight_log entry on/before the session date — BEFORE
       // library registration, so the library auto-create below sees the same doc that
       // gets inserted. Never overwrites an explicit weight_kg/weight_input.
+      doc.exercises = await canonicalizeExercises(db.collection('exercises_library'), doc.exercises) // #1692 п.2
       if (doc.exercises && doc.exercises.length > 0) {
         const bodyweightKg = await resolveBodyweightForDate(db.collection('weight_log'), doc.date)
         doc.exercises = fillBodyweightSets(doc.exercises, bodyweightKg).exercises
@@ -862,6 +864,8 @@ module.exports = function (getDB) {
       // guess) and muscle_group likewise never guessed (#1408, surfaced below via
       // needs_muscle_group_clarification instead of staying a silent null).
       const libCol = db.collection('exercises_library')
+      const canonEntries = await canonicalizeExercises(libCol, entries) // #1692 п.2
+      entries.splice(0, entries.length, ...canonEntries)
       const libByName = await ensureExercisesInLibrary(libCol, entries.map(e => e.name))
       let newExercises = entries.map(entry => buildExerciseFromParsed(entry, libByName.get(entry.name)?.weight_unit ?? null))
 
@@ -930,6 +934,7 @@ module.exports = function (getDB) {
       // the RIGHT day, not "no date at all -> null" (resolveBodyweightForDate treats a
       // missing date as no-op, so a silent skip here would leave edited bodyweight sets
       // unfilled forever).
+      doc.exercises = await canonicalizeExercises(db.collection('exercises_library'), doc.exercises) // #1692 п.2
       if (doc.exercises && doc.exercises.length > 0) {
         let sessionDate = doc.date
         if (!sessionDate) {

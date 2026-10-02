@@ -44,6 +44,7 @@ function makeApp(opts: {
       if (name === 'exercises_library') {
         return {
           findOne: async (filter: any) => {
+            if (!filter.name) return null // #1692 п.2: alias lookup ({aliases:…}) — no aliases in this fixture
             const re = filter.name.$regex
             return exercises.find(e => re.test(e.name as string)) || null
           },
