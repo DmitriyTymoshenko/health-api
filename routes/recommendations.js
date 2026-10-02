@@ -799,6 +799,7 @@ module.exports = function (getDB) {
           avg_calories: avgCalories,
           target_calories: avgTarget,
           avg_deficit: avgDeficit,
+          is_cut_goal: isCutGoal, // #1727: false for recomp/maintenance → UI hides deficit wording
           avg_protein: avgProtein,
           target_protein: Math.round(targetProtein),
           protein_gap: Math.round(proteinGap),
