@@ -66,8 +66,8 @@ describe('GET /api/whoop/weekly-compare (#1411 R3)', () => {
         { date: '2026-09-18', sleep_hours: 8.5, sleep_performance: 90, sleep_efficiency: 88 },
       ],
       whoop_workouts: [
-        { date: '2026-09-17', type: 'run' },
-        { date: '2026-09-18', type: 'gym' }, // today's workout — must not count toward curr
+        { date: '2026-09-17', type: 'run', duration_min: 50, strain: 9 },
+        { date: '2026-09-18', type: 'gym', duration_min: 60, strain: 10 }, // today's workout — must not count toward curr
       ],
       nutrition_log: [
         { date: '2026-09-14', kcal: 2500, protein_g: 180 },

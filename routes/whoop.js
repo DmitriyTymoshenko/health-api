@@ -1,5 +1,6 @@
 const { Router } = require('express')
 const { daysBetweenDateStrings } = require('../lib/training-program')
+const { isRealWhoopWorkout } = require('../lib/whoop-real-workout')
 
 // #1294 SECURITY: XSS — every `res.send(\`<h2>...${userInput}</h2>\`)` sink in this file
 // interpolated request-controlled data (query params, upstream error bodies) straight into
@@ -401,7 +402,7 @@ module.exports = function (getDB) {
       const rec = splitWeek(recovery)                            // night — today included (already complete)
       const slp = splitWeek(sleep)                                // night — today included (already complete)
       const cyc = splitWeek(cycles, { excludeToday: true })       // daily: strain/calories_burned
-      const wk = splitWeek(workouts, { excludeToday: true })      // daily: workout count
+      const wk = splitWeek(workouts.filter(isRealWhoopWorkout), { excludeToday: true })      // daily: workout count
       const nut = splitWeek(nutrition, { excludeToday: true })    // daily: nutrition kcal/protein
       const wgt = splitWeek(weight)
 
