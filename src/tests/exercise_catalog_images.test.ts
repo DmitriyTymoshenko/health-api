@@ -14,11 +14,16 @@
 import request from 'supertest'
 import fs from 'fs'
 import path from 'path'
+import os from 'os'
+
+// #1637: fixture lives in a tmp dir (server.js honours EXERCISES_UPLOAD_DIR) — never in the working uploads/exercises.
+const TMP_UPLOADS = fs.mkdtempSync(path.join(os.tmpdir(), 'ex-uploads-1332-'))
+process.env.EXERCISES_UPLOAD_DIR = TMP_UPLOADS
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const app = require('../../server')
 
-const FIXTURE_DIR = path.join(__dirname, '..', '..', 'uploads', 'exercises', '__test_fixture_1332__')
+const FIXTURE_DIR = path.join(TMP_UPLOADS, '__test_fixture_1332__')
 const FIXTURE_PATH = path.join(FIXTURE_DIR, '0.jpg')
 
 describe('GET /uploads/exercises/:id/:n.jpg (#1332 acceptance #7)', () => {
@@ -31,7 +36,7 @@ describe('GET /uploads/exercises/:id/:n.jpg (#1332 acceptance #7)', () => {
   })
 
   afterAll(() => {
-    fs.rmSync(FIXTURE_DIR, { recursive: true, force: true })
+    fs.rmSync(TMP_UPLOADS, { recursive: true, force: true })
   })
 
   it('serves an existing image with 200 and image/jpeg content-type — not HTML/404', async () => {

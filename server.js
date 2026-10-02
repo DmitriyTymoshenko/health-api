@@ -38,7 +38,7 @@ app.use(express.json({ limit: JSON_BODY_LIMIT }))
 // raw.githubusercontent.com). Served under /uploads/exercises/<source_id>/<n>.jpg;
 // express.static sets content-type from the file extension, so a real .jpg here always
 // answers image/jpeg — no route logic needed beyond mounting the directory.
-app.use('/uploads/exercises', express.static(path.join(__dirname, 'uploads', 'exercises')))
+app.use('/uploads/exercises', express.static(process.env.EXERCISES_UPLOAD_DIR || path.join(__dirname, 'uploads', 'exercises')))
 
 let db
 
