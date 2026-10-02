@@ -103,6 +103,20 @@ module.exports = function (getDB) {
     }
   })
 
+  // GET /api/workouts/exercises/catalog-batch?ids=a,b,c — full docs for many ids in ONE
+  // round-trip (#1693 п.8: the Довідник tab used to fire one request per linked exercise).
+  // Own path segment (not under /catalog/:source_id) so it can never be swallowed by the param route.
+  router.get('/exercises/catalog-batch', async (req, res) => {
+    try {
+      const ids = String(req.query.ids || '').split(',').map(x => x.trim()).filter(Boolean).slice(0, 200)
+      if (ids.length === 0) return res.json({ items: [] })
+      const items = await getDB().collection('exercises_catalog').find({ source_id: { $in: ids } }).toArray()
+      res.json({ items })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // GET /api/workouts/exercises/catalog/labels — Dictionary A∘B composed equipment
   // labels, keyed by OUR enum (#1334 ЕТАП 1б, comment #7581 §2/#7585). MUST be
   // registered BEFORE the `/:source_id` route below — Express matches routes in

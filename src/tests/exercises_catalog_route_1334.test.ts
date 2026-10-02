@@ -53,6 +53,7 @@ function makeFakeCollection(docs: Doc[]) {
         const re = new RegExp(cond.$regex, cond.$options)
         return typeof doc[field] === 'string' && re.test(doc[field])
       }
+      if (cond && typeof cond === 'object' && '$in' in cond) return cond.$in.includes(doc[field])
       return doc[field] === cond
     })
   }
@@ -290,6 +291,20 @@ describe('GET /api/workouts/exercises/catalog/:source_id — detail view', () =>
   it('returns 404 (not 500, not a silent empty 200) for an unknown source_id', async () => {
     const res = await request(makeApp(CATALOG)).get('/api/workouts/exercises/catalog/does-not-exist')
     expect(res.status).toBe(404)
+  })
+})
+
+describe('GET /api/workouts/exercises/catalog-batch — #1693 п.8 one round-trip', () => {
+  it('returns all requested docs in ONE request, with instructions, ignoring unknown ids', async () => {
+    const res = await request(makeApp(CATALOG)).get('/api/workouts/exercises/catalog-batch').query({ ids: 'Barbell_Bench_Press,Romanian_Deadlift,nope' })
+    expect(res.status).toBe(200)
+    expect(res.body.items.map((d: Doc) => d.source_id).sort()).toEqual(['Barbell_Bench_Press', 'Romanian_Deadlift'])
+    expect(res.body.items[0].instructions_en).toEqual(['step 1', 'step 2'])
+  })
+  it('empty/missing ids -> {items:[]} 200, not swallowed by /:source_id', async () => {
+    const res = await request(makeApp(CATALOG)).get('/api/workouts/exercises/catalog-batch')
+    expect(res.status).toBe(200)
+    expect(res.body).toEqual({ items: [] })
   })
 })
 
