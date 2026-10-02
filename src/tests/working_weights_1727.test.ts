@@ -33,3 +33,15 @@ describe('buildWorkingWeights', () => {
     expect(r).toEqual([])
   })
 })
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { resolveWeightGoal } = require('../../lib/targets-resolver')
+describe('resolveWeightGoal — #1727 no phantom deadline for recomp', () => {
+  it('recomp + null date → null date (no default 2026-10-15)', () => {
+    expect(resolveWeightGoal({ primary_goal: 'recomp', weight_goal_kg: 92, weight_goal_date: null }).weight_goal_date).toBeNull()
+  })
+  it('weight_loss + null date keeps the legacy default; explicit date always wins', () => {
+    expect(resolveWeightGoal({ primary_goal: 'weight_loss', weight_goal_date: null }).weight_goal_date).toBe('2026-10-15')
+    expect(resolveWeightGoal({ primary_goal: 'recomp', weight_goal_date: '2026-12-01' }).weight_goal_date).toBe('2026-12-01')
+  })
+})
