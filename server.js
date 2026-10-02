@@ -317,6 +317,7 @@ app.use('/api/labs', require('./routes/labs')(getDB))
 app.use('/api/water', require('./routes/water')(getDB))
 app.use('/api/workouts', require('./routes/workouts')(getDB))
 app.use('/api/workouts', require('./routes/exercises_catalog')(getDB)) // #1334 Ф3 ЕТАП 1 — separate file, workouts.js untouched
+app.use('/api/workouts', require('./routes/training_load')(getDB)) // #1693 Е1 — sets/week + load vs recovery
 app.use('/api/weight', require('./routes/weight')(getDB))
 app.use('/api/steps', require('./routes/steps')(getDB))
 app.use('/api/goals', require('./routes/goals')(getDB))
