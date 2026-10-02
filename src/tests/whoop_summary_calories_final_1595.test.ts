@@ -35,3 +35,5 @@ describe('GET /api/whoop/summary calories_final (#1595 п.6)', () => {
     expect(res.body.calories_final).toBe(expected)
   })
 })
+
+export {}
