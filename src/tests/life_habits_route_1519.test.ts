@@ -575,3 +575,24 @@ describe('GET /api/life/today', () => {
 })
 
 export {}
+
+describe('PUT /api/life/habits/:id — type change (#1712)', () => {
+  it('persists a build -> break type change and GET returns it', async () => {
+    const habitId = new ObjectId()
+    const { app } = makeApp({
+      habits: [{ _id: habitId, type: 'build', name: 'x', implementation: 'y', active: true, archived_at: null }],
+    })
+    const put = await request(app).put(`/api/life/habits/${habitId}`).send({ type: 'break', name: 'x', identity: null, two_minute: null })
+    expect(put.status).toBe(200)
+    expect(put.body.type).toBe('break')
+    const get = await request(app).get(`/api/life/habits/${habitId}`)
+    expect(get.body.type).toBe('break')
+  })
+
+  it('400 on an invalid type', async () => {
+    const habitId = new ObjectId()
+    const { app } = makeApp({ habits: [{ _id: habitId, type: 'build', name: 'x', active: true }] })
+    const put = await request(app).put(`/api/life/habits/${habitId}`).send({ type: 'nope' })
+    expect(put.status).toBe(400)
+  })
+})

@@ -152,12 +152,15 @@ module.exports = function (getDB) {
   })
 
   // PUT /api/life/habits/:id — partial update of the editable fields.
-  const HABIT_EDITABLE_FIELDS = ['name', 'sphere', 'identity', 'implementation', 'two_minute']
+  const HABIT_EDITABLE_FIELDS = ['type', 'name', 'sphere', 'identity', 'implementation', 'two_minute']
   router.put('/habits/:id', async (req, res) => {
     try {
       const id = toObjectId(req.params.id)
       if (!id) return res.status(404).json({ error: 'Not found' })
       const db = getDB()
+      if (req.body.type !== undefined && req.body.type !== 'build' && req.body.type !== 'break') {
+        return res.status(400).json({ error: "type must be 'build' or 'break'" })
+      }
       const set = { updated_at: new Date() }
       for (const f of HABIT_EDITABLE_FIELDS) {
         if (req.body[f] !== undefined) set[f] = req.body[f]
