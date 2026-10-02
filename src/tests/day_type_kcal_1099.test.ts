@@ -166,3 +166,20 @@ describe('resolveDayTypeAwareKcalBasis (#1099)', () => {
 })
 
 export {}
+
+describe('stale sports ignored (#1692 п.9)', () => {
+  it('drops weekday analogs containing a sport unseen for >14 days', async () => {
+    const date = '2026-10-02'
+    const cycles = sameWeekdayCycles(date, 8, 3000)
+    const boxingDates = cycles.slice(2, 8).map((c) => c.date)
+    const wk = boxingDates.map((d) => ({ date: d, sport_name: 'boxing' }))
+    const db: any = {
+      collection(name: string) {
+        const data = name === 'whoop_cycles' ? cycles : wk
+        return { find: () => ({ toArray: async () => data }) }
+      },
+    }
+    // 6 of 8 analogs were boxing days, boxing not within 14d -> only 2 left (<MIN) -> null
+    expect(await resolveWeekdayAnalogFullDayKcal(db, date)).toBeNull()
+  })
+})
