@@ -19,9 +19,22 @@ describe('fillBodyweightSets', () => {
     const { exercises: out, filledCount } = fillBodyweightSets(exercises, 92.9)
     expect(filledCount).toBe(2)
     expect(out[0].sets).toEqual([
-      { reps: 60, weight_kg: 92.9, weight_source: 'bodyweight' },
-      { reps: 45, weight_kg: 92.9, weight_source: 'bodyweight' },
+      { reps: 60, weight_kg: null, weight_source: 'bodyweight' },
+      { reps: 45, weight_kg: null, weight_source: 'bodyweight' },
     ])
+  })
+
+  it('#1692 п.1: push-ups = 0.64 x BW, pull-ups = 1.0 x BW, mountain climbers/leg raises = no tonnage', () => {
+    const { exercises: out } = fillBodyweightSets([
+      { name: 'Віджимання', sets: [{ reps: 10 }] },
+      { name: 'Підтягування', sets: [{ reps: 5 }] },
+      { name: 'Mountain climbers', sets: [{ reps: 30 }] },
+      { name: 'Підйом ніг', sets: [{ reps: 12 }] },
+    ], 94.4)
+    expect(out[0].sets[0].weight_kg).toBe(60.4)
+    expect(out[1].sets[0].weight_kg).toBe(94.4)
+    expect(out[2].sets[0].weight_kg).toBeNull()
+    expect(out[3].sets[0].weight_kg).toBeNull()
   })
 
   it('leaves weight_kg null (no hardcode) when no bodyweight measurement exists yet', () => {
@@ -57,7 +70,7 @@ describe('fillBodyweightSets', () => {
     ]
     const { exercises: out, filledCount } = fillBodyweightSets(exercises, 92.9)
     expect(filledCount).toBe(1)
-    expect(out[0].sets[0]).toMatchObject({ weight_kg: 92.9, weight_source: 'bodyweight' })
+    expect(out[0].sets[0]).toMatchObject({ weight_kg: null, weight_source: 'bodyweight' })
     expect(out[1].sets[0]).toEqual({ reps: 8, weight_kg: 80 })
   })
 })
