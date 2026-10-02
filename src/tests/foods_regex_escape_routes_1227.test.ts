@@ -68,15 +68,18 @@ function makeApp(state: { docs: Doc[]; inserted: Doc[] }) {
 
 describe('foods routes escape regex metacharacters (#1227)', () => {
   it('POST /api/foods accepts a new food name with an unbalanced parenthesis', async () => {
-    const state = { docs: [] as Doc[], inserted: [] as Doc[] }
+    const state = {
+      docs: [{ _id: '1', name: 'Гречка', name_ua: '', brand: '', use_count: 1 }],
+      inserted: [] as Doc[],
+    }
 
     const res = await request(makeApp(state))
       .post('/api/foods')
-      .send({ name: 'Псиліум (лушпиння)', kcal_per_100g: 20 })
+      .send({ name: 'Голубці (з рисом', kcal_per_100g: 120 })
 
     expect(res.status).toBe(201)
     expect(state.inserted).toHaveLength(1)
-    expect(state.inserted[0].name).toBe('Псиліум (лушпиння)')
+    expect(state.inserted[0].name).toBe('Голубці (з рисом')
   })
 
   it('GET /api/foods?search=( returns 200 instead of regex SyntaxError -> 500', async () => {
