@@ -234,8 +234,14 @@ module.exports = function (getDB) {
   router.get('/summary', summaryHandler)
   async function summaryHandler(req, res) {
     try {
-      const db = getDB()
-      const today = req.query.date || todayKyiv()
+      res.json(await computeSummary(getDB(), req.query.date || todayKyiv()))
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  }
+  // #1729: extracted so POST /nutrition/log-food returns the SAME day summary in one call.
+  async function computeSummary(db, today) {
+    {
       const data = await db.collection('nutrition_log').find({ date: today }).toArray()
 
       // Sums both on-disk formats (flat modern + legacy nested items[]) — see
@@ -305,11 +311,10 @@ module.exports = function (getDB) {
       summary.fiber_goal_g = resolveFiberGoalG(profile, kcalBasis)
       summary.fiber_status = goalStatus(summary.fiber_g, summary.fiber_goal_g)
 
-      res.json(summary)
-    } catch (err) {
-      res.status(500).json({ error: err.message })
+      return summary
     }
   }
+  router.computeSummary = computeSummary
 
   // POST /api/nutrition
   // #1297: `normalizeNutrition` runs FIRST so the `name` → `food_name` alias
