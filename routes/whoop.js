@@ -150,6 +150,8 @@ module.exports = function (getDB) {
         fallback_reason: noData ? 'sync_missing' : isFallback ? 'pending_or_incomplete' : null,
         calories_burned,
         calories_source,
+        // #1595 п.6: an open cycle (end=null) means the day is not closed — burn figure is provisional
+        calories_final: cycle ? cycle.end != null : null,
         strain: cycle?.strain ?? null,
         avg_heart_rate: cycle?.avg_heart_rate ?? null,
         max_heart_rate: cycle?.max_heart_rate ?? null,
