@@ -588,6 +588,9 @@ module.exports = function (getDB) {
       // carrying both the `|| 500` defect and the subtract-only sign, so a bulking
       // profile would have been graded against a CUT target all week.
       const targetCalories = stableDayKcalBasis(profile)
+      // #1727: deficit wording/"good news" only for an actual cut (weight_loss + deficit > 0);
+      // recomp / maintenance (deficit 0) must not be told it is "in a deficit".
+      const isCutGoal = profile.primary_goal === 'weight_loss' && Number(profile.deficit_kcal) > 0
       const latestWeightEntry7d = await db.collection('weight_log').findOne({}, { sort: { date: -1 } })
       const targetProtein = resolveProteinGoalG(profile, resolveWeightKg(profile, latestWeightEntry7d?.weight_kg)) || 150
 
@@ -720,7 +723,7 @@ module.exports = function (getDB) {
         patterns.push({
           type: 'calorie_surplus',
           severity,
-          message: `${surplusDays.length} ${surplusDays.length === 1 ? 'день' : 'дні'} з профіцитом (${surplusDayNames}). ${surplusDays.length <= 2 ? 'Це нормально при дефіциті решту тижня.' : 'Занадто часто — слід контролювати.'}`,
+          message: `${surplusDays.length} ${surplusDays.length === 1 ? 'день' : 'дні'} з профіцитом (${surplusDayNames}). ${surplusDays.length <= 2 ? (isCutGoal ? 'Це нормально при дефіциті решту тижня.' : 'Це нормально, якщо середнє за тиждень біля цілі.') : 'Занадто часто — слід контролювати.'}`,
           fix: 'Контролюй вихідні — зазвичай найбільше відхилення',
         })
       }
@@ -730,7 +733,7 @@ module.exports = function (getDB) {
         patterns.push({
           type: 'under_eating',
           severity: 'medium',
-          message: `${underEatingDays.length} дні з дуже малим споживанням (< ${targetCalories - 800} ккал). Занадто великий дефіцит сповільнює метаболізм.`,
+          message: `${underEatingDays.length} дні з дуже малим споживанням (< ${targetCalories - 800} ккал). ${isCutGoal ? 'Занадто великий дефіцит сповільнює метаболізм.' : 'Занадто мало їжі — ризик для м\'язів і відновлення.'}`,
           fix: 'Не опускайся нижче -800 ккал від норми. Додай перекус у ці дні.',
         })
       }
@@ -746,7 +749,7 @@ module.exports = function (getDB) {
       }
 
       // Consistent deficit (good news)
-      if (allInDeficit && patterns.length === 0) {
+      if (isCutGoal && allInDeficit && patterns.length === 0) {
         patterns.push({
           type: 'consistent_deficit',
           severity: 'low',
@@ -761,7 +764,10 @@ module.exports = function (getDB) {
       const weeklyBalance = Math.round(totalSurplusDeficit)
       const whoopSuffix = hasWhoopData ? ' (на основі WHOOP даних)' : ''
 
-      if (weeklyBalance < 0) {
+      if (!isCutGoal) {
+        // #1727 recomp/maintenance: the goal is balance ≈ 0, not a negative number
+        weeklyStrategy = `Тижневий баланс: ${weeklyBalance > 0 ? '+' : ''}${weeklyBalance} ккал (ціль — біля нуля)${whoopSuffix}.`
+      } else if (weeklyBalance < 0) {
         weeklyStrategy = `Тижневий баланс: ${weeklyBalance} ккал (добре)${whoopSuffix}.`
       } else {
         weeklyStrategy = `Тижневий баланс: +${weeklyBalance} ккал (профіцит — слід скоригувати)${whoopSuffix}.`
@@ -774,7 +780,7 @@ module.exports = function (getDB) {
         } else if (mainProblem.type === 'calorie_surplus') {
           weeklyStrategy += ' Контролюй вихідні — основне джерело профіциту.'
         } else if (mainProblem.type === 'under_eating') {
-          weeklyStrategy += ' Уникай екстремального дефіциту — це шкодить метаболізму.'
+          weeklyStrategy += isCutGoal ? ' Уникай екстремального дефіциту — це шкодить метаболізму.' : ' Не недоїдай — їжа потрібна для відновлення і росту сили.'
         }
       } else {
         weeklyStrategy += ' Загалом тиждень хороший. Продовжуй в тому ж темпі.'

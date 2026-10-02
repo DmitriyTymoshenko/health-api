@@ -5,6 +5,7 @@ const { formatDateKyiv } = require('../lib/training-program')
 const { MUSCLE_GROUPS } = require('../lib/exercise-dictionaries')
 const { exerciseNamesFromWorkouts } = require('../lib/volume-by-muscle')
 const { buildPrFeed } = require('../lib/pr-feed')
+const { buildWorkingWeights } = require('../lib/working-weights')
 const { buildWeeklySets, buildLoadRecovery, buildProgramAdherence, addDays } = require('../lib/training-load')
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
@@ -44,6 +45,8 @@ module.exports = function (getDB) {
         date: today,
         ...weekly,
         prs: buildPrFeed(allWorkouts, { from: from90 }),
+        // #1727 п.2: working weight per session over the last 90d
+        working_weights: buildWorkingWeights(allWorkouts, { from: from90 }),
         program_adherence: buildProgramAdherence({ program, workouts90, whoopWorkouts90, today, weekFrom: weekly.week.from, weekTo: weekly.week.to }),
         load_recovery: buildLoadRecovery({ today, whoopWorkouts90, recovery28, workouts90 }),
       })

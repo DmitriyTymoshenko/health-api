@@ -105,6 +105,23 @@ describe('GET /api/profile/metrics — goal modes must not crash the ETA', () =>
     }
   })
 
+  it('#1727 — live recomp profile (deficit 0, weight_goal_date null, goal == current weight) returns 200 with no ETA', async () => {
+    const app = makeApp({
+      ...LIVE_PROFILE,
+      primary_goal: 'recomp',
+      deficit_kcal: 0,
+      weight_goal_kg: 92,
+      weight_goal_date: null,
+      body_fat_goal_pct: 22,
+      tdee_kcal: 2701,
+    }, 92)
+    const res = await request(app).get('/api/profile/metrics')
+    expect(res.status).toBe(200)
+    expect(res.body.kg_to_goal).toBe(0)
+    expect(res.body.days_to_goal).toBe(0)
+    expect(res.body.target_date_estimated).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+  })
+
   it('already at/below goal weight still reports 0 days in every mode', async () => {
     for (const primary_goal of ['weight_loss', 'maintenance', 'muscle_gain', 'recomp', 'endurance']) {
       const app = makeApp({ ...LIVE_PROFILE, primary_goal }, 95)
