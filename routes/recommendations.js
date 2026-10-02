@@ -18,6 +18,7 @@ const { macroContribution } = require('../lib/nutrition-aggregate')
 // #1099 — GET /week: Kyiv-day + date-arithmetic helpers, reused rather than a
 // third private copy (lib/volume-by-muscle.js already has one private pair).
 const { formatDateKyiv, addDaysToDateString } = require('../lib/training-program')
+const { todayKyiv } = require('../lib/kyiv-day')
 
 // High-protein suggestions pool
 const HIGH_PROTEIN_POOL = [
@@ -292,7 +293,7 @@ module.exports = function (getDB) {
   router.get('/', async (req, res) => {
     try {
       const db = getDB()
-      const date = req.query.date || new Date().toISOString().split('T')[0]
+      const date = req.query.date || todayKyiv()
 
       // 1. Fetch today's nutrition
       const nutritionEntries = await db.collection('nutrition_log').find({ date }).toArray()

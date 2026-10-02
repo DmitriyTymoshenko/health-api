@@ -1,9 +1,6 @@
 const { Router } = require('express')
 const { requireFields, validateDate } = require('../lib/validate')
-
-function kyivToday() {
-  return new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Kiev' })
-}
+const { todayKyiv } = require('../lib/kyiv-day')
 
 module.exports = function (getDB) {
   const router = Router()
@@ -46,7 +43,7 @@ module.exports = function (getDB) {
   router.get('/analysis', async (req, res) => {
     try {
       const db = getDB()
-      const today = kyivToday()
+      const today = todayKyiv()
 
       // Try to get today's weight first
       const todayEntry = await db.collection('weight_log').findOne({ date: today })
@@ -156,7 +153,7 @@ module.exports = function (getDB) {
     try {
       const db = getDB()
       const doc = req.body
-      if (!doc.date) doc.date = new Date().toISOString().split('T')[0]
+      if (!doc.date) doc.date = todayKyiv()
       doc.created_at = new Date()
 
       // #1297 (dedup + unique index): `date` now has a unique index — a second

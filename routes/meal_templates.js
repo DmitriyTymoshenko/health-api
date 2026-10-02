@@ -1,4 +1,5 @@
 const { Router } = require('express')
+const { todayKyiv } = require('../lib/kyiv-day')
 
 /**
  * Meal Templates
@@ -70,7 +71,7 @@ module.exports = function (getDB) {
       const template = await db.collection('meal_templates').findOne(filter)
       if (!template) return res.status(404).json({ error: 'Template not found' })
 
-      const date = req.query.date || new Date().toISOString().split('T')[0]
+      const date = req.query.date || todayKyiv()
       const nutritionColl = db.collection('nutrition_log')
 
       const docs = template.items.map(item => ({

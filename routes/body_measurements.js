@@ -1,5 +1,6 @@
 const { Router } = require('express')
 const { requireAnyField, validateDate } = require('../lib/validate')
+const { todayKyiv } = require('../lib/kyiv-day')
 
 module.exports = function (getDB) {
   const router = Router()
@@ -46,7 +47,7 @@ module.exports = function (getDB) {
     try {
       const db = getDB()
       const doc = req.body
-      if (!doc.date) doc.date = new Date().toISOString().split('T')[0]
+      if (!doc.date) doc.date = todayKyiv()
       doc.created_at = new Date()
       const result = await db.collection('body_measurements').insertOne(doc)
       res.status(201).json({ ...doc, _id: result.insertedId })

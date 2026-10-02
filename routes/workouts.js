@@ -3,6 +3,7 @@ const { calc1RM, pickBestSet } = require('../lib/workout-sets')
 const { evaluateProgression } = require('../lib/exercise-progression')
 const { buildExerciseTrends } = require('../lib/exercise-trends')
 const { formatDateKyiv } = require('../lib/training-program')
+const { todayKyiv } = require('../lib/kyiv-day')
 const { parseWorkoutLogText } = require('../lib/workout-log-parser')
 const {
   buildExerciseFromParsed,
@@ -704,7 +705,7 @@ module.exports = function (getDB) {
     try {
       const db = getDB()
       const doc = req.body
-      if (!doc.date) doc.date = new Date().toISOString().split('T')[0]
+      if (!doc.date) doc.date = todayKyiv()
       if (!doc.source) doc.source = 'manual'
       doc.created_at = new Date()
 
@@ -851,7 +852,7 @@ module.exports = function (getDB) {
         return res.status(400).json({ error: 'text required' })
       }
 
-      const sessionDate = date || new Date().toISOString().split('T')[0]
+      const sessionDate = date || todayKyiv()
       const sessionSource = source || 'telegram-log'
 
       const { entries, skipped } = parseWorkoutLogText(text)

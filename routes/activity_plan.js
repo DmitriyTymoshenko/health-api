@@ -1,6 +1,7 @@
 const { Router } = require('express')
 const { ObjectId } = require('mongodb')
 const { recoveryZone } = require('../lib/recovery-zone')
+const { todayKyiv } = require('../lib/kyiv-day')
 
 module.exports = function (getDB) {
   const router = Router()
@@ -26,7 +27,7 @@ module.exports = function (getDB) {
     try {
       const db = getDB()
       const doc = {
-        date: req.body.date || new Date().toISOString().split('T')[0],
+        date: req.body.date || todayKyiv(),
         type: req.body.type || 'other',
         name: req.body.name || '',
         strain_target: req.body.strain_target ?? null,
@@ -82,7 +83,7 @@ module.exports = function (getDB) {
       const activityStats = settings?.activity_stats || {}
 
       // Get today's WHOOP data: recovery + current CYCLE strain
-      const today = new Date().toISOString().split('T')[0]
+      const today = todayKyiv()
       const recovery = await db.collection('whoop_recovery').findOne({ date: today })
       const recoveryScore = recovery?.recovery_score ?? 65
 

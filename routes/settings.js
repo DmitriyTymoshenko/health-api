@@ -1,4 +1,5 @@
 const express = require('express')
+const { todayKyiv } = require('../lib/kyiv-day')
 
 const DEFAULT_SETTINGS = {
   key: 'default',
@@ -53,7 +54,7 @@ module.exports = function (getDB) {
 
       // Save daily plan snapshot when deficit changes
       if (updates.daily_deficit_goal !== undefined) {
-        const today = new Date().toISOString().split('T')[0]
+        const today = todayKyiv()
         await db.collection('daily_plans').updateOne(
           { date: today },
           { $set: { date: today, daily_deficit_goal: updates.daily_deficit_goal, saved_at: new Date().toISOString() } },

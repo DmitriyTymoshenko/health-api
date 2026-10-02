@@ -3,6 +3,7 @@ const multer = require('multer')
 const path = require('path')
 const fs = require('fs')
 const { formatDateKyiv, daysBetweenDateStrings } = require('../lib/training-program')
+const { todayKyiv } = require('../lib/kyiv-day')
 // #1492 (stage H of #1485, REQ-10): reminder bucketing extracted to
 // lib/labs-reminders.js so the new weekly digest can reuse it instead of
 // duplicating RETEST_INTERVALS/daysLeft logic. Safe to require here (no
@@ -325,7 +326,7 @@ function makeRouter(getDB) {
     try {
       const db = getDB()
       const { date, values, notes, source } = req.body
-      const d = date || new Date().toISOString().split('T')[0]
+      const d = date || todayKyiv()
       
       // Annotate with status
       const annotated = {}

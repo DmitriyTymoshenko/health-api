@@ -54,7 +54,7 @@ module.exports = function (getDB) {
     try {
       const db = getDB()
       const doc = req.body
-      if (!doc.date) doc.date = new Date().toISOString().split('T')[0]
+      if (!doc.date) doc.date = todayKyiv()
       doc.created_at = new Date()
 
       const result = await db.collection('daily_metrics').findOneAndUpdate(

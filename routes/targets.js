@@ -1,5 +1,6 @@
 const { Router } = require('express')
 const { resolveDayTargets } = require('../lib/targets-resolver')
+const { todayKyiv } = require('../lib/kyiv-day')
 
 module.exports = function (getDB) {
   const router = Router()
@@ -12,7 +13,7 @@ module.exports = function (getDB) {
   router.get('/', async (req, res) => {
     try {
       const db = getDB()
-      const date = req.query.date || new Date().toISOString().split('T')[0]
+      const date = req.query.date || todayKyiv()
       const targets = await resolveDayTargets(db, date)
       res.json(targets)
     } catch (err) {
