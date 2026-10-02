@@ -3,6 +3,7 @@ const { ObjectId } = require('mongodb')
 const { requireFields } = require('../lib/validate')
 const { todayKyiv, toKyivDay, isValidKyivDayFormat } = require('../lib/kyiv-day')
 const { habitDoneToday, ruleCheckState, computeDaysClean } = require('../lib/life-rules')
+const lifeToday = require('../lib/life-today')
 
 // #1519 (SPEC #1518) — `/me` MVP: habits (`life_habits`), rules
 // (`life_habit_rules`), rule check-ins (`life_rule_checks`), and the
@@ -41,7 +42,13 @@ async function attachActiveRules(db, habits) {
   return habits.map((habit) => ({ ...habit, rules: rulesByHabit[String(habit._id)] || [] }))
 }
 
-module.exports = function (getDB) {
+module.exports = function (getDB, sources) {
+  // #1601: external sources for the /today state/food blocks (injectable for tests).
+  // Under jest (NODE_ENV=test) the default never calls the live API: blocks degrade to null+reason.
+  const offline = async () => { throw new Error('sources unavailable (test env)') }
+  const src = sources || (process.env.NODE_ENV === 'test'
+    ? { readiness: offline, whoop: offline, nutrition: offline }
+    : lifeToday.makeHttpSources(`http://127.0.0.1:${process.env.HEALTH_API_TEST_PORT || 3001}`))
   const router = Router()
 
   // ---- habits -------------------------------------------------------
@@ -449,7 +456,38 @@ module.exports = function (getDB) {
         return { ...habit, rules: rulesOut, done_today, days_clean }
       })
 
-      res.json({ day, day_goals: dayGoals, habits: habitsOut })
+      // #1601: focus + state/calendar/food — each block independently null+reason.
+      const focus = dayGoals
+        .filter((g) => g.focus === true)
+        .sort((a, b) => (a.focus_rank || 9) - (b.focus_rank || 9))
+      const [readinessR, whoopR, nutritionR, snapshotR] = await Promise.all([
+        lifeToday.settle(() => src.readiness(day)),
+        lifeToday.settle(() => src.whoop(day)),
+        lifeToday.settle(() => src.nutrition(day)),
+        lifeToday.settle(() => db.collection('life_calendar_snapshots').findOne({ day })),
+      ])
+      const state = readinessR.ok
+        ? lifeToday.buildStateBlock(readinessR.value, whoopR.ok ? whoopR.value : null)
+        : { block: null, reason: 'readiness недоступний' }
+      const food = nutritionR.ok
+        ? lifeToday.buildFoodBlock(nutritionR.value, day)
+        : { block: null, reason: 'підсумок їжі недоступний' }
+      const calendar = snapshotR.ok
+        ? lifeToday.buildCalendarBlock(snapshotR.value, { day, todayDay: todayKyiv() })
+        : { block: null, reason: 'календар недоступний' }
+
+      res.json({
+        day,
+        day_goals: dayGoals,
+        focus,
+        habits: habitsOut,
+        state: state.block,
+        state_reason: state.reason,
+        calendar: calendar.block,
+        calendar_reason: calendar.reason,
+        food: food.block,
+        food_reason: food.reason,
+      })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }

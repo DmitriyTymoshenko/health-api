@@ -2,6 +2,7 @@ const { Router } = require('express')
 const { ObjectId } = require('mongodb')
 const { requireFields } = require('../lib/validate')
 const { todayKyiv, addDaysToKyivDay, isValidKyivDayFormat } = require('../lib/kyiv-day')
+const { MAX_FOCUS_PER_DAY } = require('../lib/life-today')
 
 // #1519 (SPEC #1518 §3/§6) — day goals (`life_day_goals`): add / close / move
 // to tomorrow / list for a day. MVP explicitly carries NO history (scope item
@@ -31,24 +32,79 @@ module.exports = function (getDB) {
     }
   })
 
-  // POST /api/life/day-goals — {day?, text, source?}; day defaults to today.
+  // POST /api/life/day-goals — {day?, text, source?, focus?, focus_rank?, proposed_by?}.
+  // #1601 (SPEC §11.1): ≤3 `focus:true` docs per day — the 4th → 400. A focus
+  // goal proposed by Lisa is stored UNCONFIRMED (confirmed_at:null) until one tap.
   router.post('/day-goals', requireFields('text'), async (req, res) => {
     try {
       const day = req.body.day || todayKyiv()
       if (!isValidKyivDayFormat(day)) {
         return res.status(400).json({ error: 'Invalid day format. Use YYYY-MM-DD' })
       }
+      const focus = req.body.focus === true
+      let focusRank = null
+      if (req.body.focus_rank !== undefined && req.body.focus_rank !== null) {
+        if (![1, 2, 3].includes(req.body.focus_rank)) {
+          return res.status(400).json({ error: 'focus_rank must be 1, 2 or 3' })
+        }
+        focusRank = req.body.focus_rank
+      }
+      if (req.body.proposed_by !== undefined && req.body.proposed_by !== null && req.body.proposed_by !== 'lisa') {
+        return res.status(400).json({ error: 'proposed_by must be "lisa" or null' })
+      }
       const db = getDB()
+      const proposedByLisa = req.body.proposed_by === 'lisa'
+      if (focus) {
+        const existing = await db.collection('life_day_goals').find({ day, focus: true }).toArray()
+        if (existing.length >= MAX_FOCUS_PER_DAY) {
+          return res.status(400).json({ error: `Max ${MAX_FOCUS_PER_DAY} focus goals per day` })
+        }
+        if (focusRank === null) {
+          const used = new Set(existing.map((g) => g.focus_rank))
+          focusRank = [1, 2, 3].find((r) => !used.has(r)) || null
+        }
+      } else {
+        focusRank = null
+      }
+      const now = new Date()
       const doc = {
         day,
         text: req.body.text,
         done: false,
         done_at: null,
-        created_at: new Date(),
+        created_at: now,
         source: req.body.source === 'lisa' ? 'lisa' : 'dashboard',
+        focus,
+        focus_rank: focusRank,
+        proposed_by: focus && proposedByLisa ? 'lisa' : null,
+        proposed_at: focus && proposedByLisa ? now : null,
+        // Dashboard-created focus is confirmed by the act of creating it; a Lisa proposal waits for the tap.
+        confirmed_at: focus && !proposedByLisa ? now : null,
+        goal_id: null,
       }
       const result = await db.collection('life_day_goals').insertOne(doc)
       res.status(201).json({ ...doc, _id: result.insertedId })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // POST /api/life/day-goals/confirm-focus — {day?}: ONE tap confirms every
+  // still-proposed focus goal of the day (#1601). Idempotent.
+  router.post('/day-goals/confirm-focus', async (req, res) => {
+    try {
+      const day = (req.body && req.body.day) || todayKyiv()
+      if (!isValidKyivDayFormat(day)) {
+        return res.status(400).json({ error: 'Invalid day format. Use YYYY-MM-DD' })
+      }
+      const db = getDB()
+      const focus = await db.collection('life_day_goals').find({ day, focus: true }).toArray()
+      const pending = focus.filter((g) => !g.confirmed_at)
+      const now = new Date()
+      for (const g of pending) {
+        await db.collection('life_day_goals').findOneAndUpdate({ _id: g._id }, { $set: { confirmed_at: now } })
+      }
+      res.json({ day, confirmed: pending.length, focus_total: focus.length })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }

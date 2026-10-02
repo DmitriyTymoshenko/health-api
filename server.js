@@ -76,6 +76,7 @@ async function connectDB() {
   await db.collection('life_rule_checks').createIndex({ rule_id: 1, day: 1 }, { unique: true })
   await db.collection('life_rule_checks').createIndex({ habit_id: 1, day: 1 })
   await db.collection('life_day_goals').createIndex({ day: 1 })
+  await db.collection('life_calendar_snapshots').createIndex({ day: 1 }, { unique: true }) // #1601
 
   console.log('Indexes created')
   return db
@@ -343,6 +344,7 @@ app.use('/api/readiness', require('./routes/readiness')(getDB)) // #1292 Ф3 —
 // supplement_stack.js both under /api/catalog).
 app.use('/api/life', require('./routes/life_habits')(getDB))
 app.use('/api/life', require('./routes/life_day_goals')(getDB))
+app.use('/api/life', require('./routes/life_calendar')(getDB)) // #1601
 app.use('/api/life', require('./routes/life_profile')(getDB))
 
 // Health check
