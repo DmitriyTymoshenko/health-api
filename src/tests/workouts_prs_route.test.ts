@@ -45,3 +45,4 @@ describe('GET /api/workouts/prs', () => {
     expect(res.body.prs[0].exercise).toBe('Тяга')
   })
 })
+export {}
