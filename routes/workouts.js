@@ -618,6 +618,18 @@ module.exports = function (getDB) {
 
     const prMap = {} // exercise_name -> { max_weight, max_volume, max_1rm, max_reps }
 
+    // #1692 п.5: e1RM is meaningful only for free weights (barbell/dumbbell).
+    // Machines/cables/other -> best set (weight x reps) instead of a fake 1RM.
+    let lib = []
+    try {
+      lib = await db.collection('exercises_library').find({}, { projection: { name: 1, equipment: 1 } }).toArray()
+    } catch (_) { /* no library -> everything falls back to best_set */ }
+    const equipByName = new Map(lib.map(l => [l.name, l.equipment]))
+    const isFreeWeight = (name) => {
+      const eq = equipByName.get(name)
+      return eq === 'barbell' || eq === 'dumbbell'
+    }
+
     for (const w of workouts) {
       if (!w.exercises) continue
       for (const ex of w.exercises) {
@@ -632,6 +644,7 @@ module.exports = function (getDB) {
             max_weight: { value: 0, date: null, reps: null },
             max_volume: { value: 0, date: null },
             max_1rm: { value: 0, date: null, weight: null, reps: null },
+            max_1rm_kind: isFreeWeight(ex.name) ? 'e1rm' : 'best_set',
             max_reps: { value: 0, date: null, weight: null },
             total_sessions: 0,
             history: [],
@@ -648,7 +661,7 @@ module.exports = function (getDB) {
         for (const s of sets) {
           const weight = s.weight_kg || 0
           const reps = s.reps || 0
-          const orm = calc1RM(weight, reps)
+          const orm = pr.max_1rm_kind === 'e1rm' ? calc1RM(weight, reps) : Math.round(weight * reps)
 
           // Max weight PR
           if (weight > pr.max_weight.value) {
