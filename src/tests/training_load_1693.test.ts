@@ -1,4 +1,5 @@
 // #1693 Е1 — sets/week per muscle group, frequency, deload, load vs recovery
+export {}
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const express = require('express')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
