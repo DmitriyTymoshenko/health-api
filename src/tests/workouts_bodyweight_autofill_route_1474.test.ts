@@ -101,7 +101,7 @@ describe('POST /api/workouts — #1474 bodyweight autofill', () => {
     const res = await request(app).post('/api/workouts').send({
       date: '2026-09-17',
       source: 'lisa',
-      exercises: [{ name: 'Планка (сек)', sets: [{ reps: 60 }, { reps: 45 }] }],
+      exercises: [{ name: 'Підтягування', sets: [{ reps: 60 }, { reps: 45 }] }],
     })
     expect(res.status).toBe(201)
     expect(res.body.exercises[0].sets).toEqual([
@@ -155,7 +155,7 @@ describe('PUT /api/workouts/:id — #1474 bodyweight autofill', () => {
     })
     const res = await request(app)
       .put(`/api/workouts/${workoutId}`)
-      .send({ exercises: [{ name: 'Підйом ніг лежачи', sets: [{ reps: 15 }] }] })
+      .send({ exercises: [{ name: 'Підтягування', sets: [{ reps: 15 }] }] })
     expect(res.status).toBe(200)
     expect(res.body.exercises[0].sets[0]).toEqual({ reps: 15, weight_kg: 93.5, weight_source: 'bodyweight' })
   })
@@ -171,7 +171,7 @@ describe('PUT /api/workouts/:id — #1474 bodyweight autofill', () => {
     })
     const res = await request(app)
       .put(`/api/workouts/${workoutId}`)
-      .send({ date: '2026-09-17', exercises: [{ name: 'Планка (сек)', sets: [{ reps: 60 }] }] })
+      .send({ date: '2026-09-17', exercises: [{ name: 'Підтягування', sets: [{ reps: 60 }] }] })
     expect(res.status).toBe(200)
     expect(res.body.exercises[0].sets[0]).toEqual({ reps: 60, weight_kg: 92.9, weight_source: 'bodyweight' })
   })
