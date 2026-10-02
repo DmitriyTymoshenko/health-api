@@ -327,7 +327,7 @@ module.exports = function (getDB) {
         created_at: new Date(), use_count: 0,
       }
       const existing = await db.collection('foods_library').findOne({
-        name: { $regex: `^${food.name}$`, $options: 'i' }
+        name: { $regex: `^${escapeRegex(food.name)}$`, $options: 'i' }
       })
       if (existing) {
         await db.collection('foods_library').updateOne(
@@ -348,11 +348,12 @@ module.exports = function (getDB) {
     try {
       const db = getDB()
       const search = (req.query.search || '').trim()
+      const safeSearch = escapeRegex(search)
       const filter = search
         ? { $or: [
-            { name:    { $regex: search, $options: 'i' } },
-            { name_ua: { $regex: search, $options: 'i' } },
-            { brand:   { $regex: search, $options: 'i' } },
+            { name:    { $regex: safeSearch, $options: 'i' } },
+            { name_ua: { $regex: safeSearch, $options: 'i' } },
+            { brand:   { $regex: safeSearch, $options: 'i' } },
           ]}
         : {}
       const foods = await db.collection('foods_library').find(filter).sort({ use_count: -1 }).limit(50).toArray()
