@@ -1,5 +1,5 @@
 const { Router } = require('express')
-const { todayKyiv } = require('../lib/kyiv-day')
+const { todayKyiv, addDaysToKyivDay } = require('../lib/kyiv-day')
 const https = require('https')
 const { requireFields, validateDate, normalizeNutrition } = require('../lib/validate')
 const {
@@ -358,7 +358,7 @@ module.exports = function (getDB) {
       const db = getDB()
       const limit = Math.min(Math.max(Number(req.query.limit) || 8, 1), 50)
       const days = Math.min(Math.max(Number(req.query.days) || 90, 1), 365)
-      const sinceDate = new Date(Date.now() - days * 86400000).toISOString().split('T')[0]
+      const sinceDate = addDaysToKyivDay(todayKyiv(), -days)
 
       const logs = await db.collection('nutrition_log')
         .find({ date: { $gte: sinceDate } })

@@ -1,5 +1,6 @@
 const { Router } = require('express')
 const { proteinGoalG, goalKcalDelta, resolveTdeeKcal } = require('../lib/nutrition-targets')
+const { todayKyiv, addDaysToKyivDay } = require('../lib/kyiv-day')
 // #1295 — weight-goal fallback constants now live in ONE place (lib/targets-resolver.js),
 // shared with GET /api/targets. DEFAULT_PROFILE below used to hardcode its own 96/2026-10-01
 // pair, disagreeing with both the live profile document (90/2026-10-15) and the `goals`
@@ -152,9 +153,7 @@ module.exports = function (getDB) {
         kg_to_goal: Math.round(toGoal * 10) / 10,
         days_to_goal: daysToGoal,
         target_date_estimated: (() => {
-          const d = new Date()
-          d.setDate(d.getDate() + daysToGoal)
-          return d.toISOString().slice(0, 10)
+          return addDaysToKyivDay(todayKyiv(), daysToGoal)
         })(),
         // Same formula, THE single source (#961) — was a local Math.round(weight*1.6).
         // `profile` is passed since #966: the coefficient is now per goal mode, and a

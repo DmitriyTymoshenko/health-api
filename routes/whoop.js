@@ -1,6 +1,7 @@
 const { Router } = require('express')
 const { daysBetweenDateStrings } = require('../lib/training-program')
 const { isRealWhoopWorkout } = require('../lib/whoop-real-workout')
+const { todayKyiv, addDaysToKyivDay } = require('../lib/kyiv-day')
 
 // #1294 SECURITY: XSS — every `res.send(\`<h2>...${userInput}</h2>\`)` sink in this file
 // interpolated request-controlled data (query params, upstream error bodies) straight into
@@ -205,8 +206,7 @@ module.exports = function (getDB) {
   router.get('/stats/30d', async (req, res) => {
     try {
       const db = getDB()
-      const from = new Date(); from.setDate(from.getDate() - 30)
-      const fromStr = from.toISOString().split('T')[0]
+      const fromStr = addDaysToKyivDay(todayKyiv(), -30)
       const docs = await db.collection('whoop_recovery').find({ date: { $gte: fromStr } }).toArray()
       const avg = (field) => {
         const vals = docs.map(d => d[field]).filter(v => v != null)
@@ -525,8 +525,7 @@ module.exports = function (getDB) {
     try {
       const db = getDB()
       const days = parseInt(req.query.days) || 30
-      const from = new Date(); from.setDate(from.getDate() - days)
-      const fromStr = from.toISOString().split('T')[0]
+      const fromStr = addDaysToKyivDay(todayKyiv(), -days)
       const [cycles, recovery, sleep, workouts] = await Promise.all([
         db.collection('whoop_cycles').find({ date: { $gte: fromStr } }).sort({ date: 1 }).toArray(),
         db.collection('whoop_recovery').find({ date: { $gte: fromStr } }).sort({ date: 1 }).toArray(),

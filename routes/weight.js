@@ -1,6 +1,6 @@
 const { Router } = require('express')
 const { requireFields, validateDate } = require('../lib/validate')
-const { todayKyiv } = require('../lib/kyiv-day')
+const { todayKyiv, addDaysToKyivDay } = require('../lib/kyiv-day')
 
 module.exports = function (getDB) {
   const router = Router()
@@ -25,9 +25,7 @@ module.exports = function (getDB) {
     try {
       const db = getDB()
       const { days = 30 } = req.query
-      const fromDate = new Date()
-      fromDate.setDate(fromDate.getDate() - Number(days))
-      const from = fromDate.toISOString().split('T')[0]
+      const from = addDaysToKyivDay(todayKyiv(), -Number(days))
 
       const data = await db.collection('weight_log')
         .find({ date: { $gte: from } })

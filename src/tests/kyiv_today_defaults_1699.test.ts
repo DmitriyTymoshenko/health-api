@@ -27,10 +27,21 @@ const workoutsRouter = require('../../routes/workouts')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const labsRouter = require('../../routes/labs')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
+const recommendationsRouter = require('../../routes/recommendations')
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const { normalizeNutrition } = require('../../lib/validate')
 
 const KYIV_EDGE_UTC = '2026-10-01T21:30:00Z'
 const KYIV_EDGE_DAY = '2026-10-02'
+const LAST_7_FULL_DAYS = [
+  '2026-09-25',
+  '2026-09-26',
+  '2026-09-27',
+  '2026-09-28',
+  '2026-09-29',
+  '2026-09-30',
+  '2026-10-01',
+]
 
 function appFor(router: any, getDB: () => any) {
   const app = express()
@@ -123,12 +134,59 @@ describe('#1699 Kyiv today defaults at 00:30 Kyiv', () => {
     normalizeNutrition(req, {}, jest.fn())
     expect(req.body.date).toBe(KYIV_EDGE_DAY)
   })
+
+  it('GET /recommendations/weekly uses the last 7 full Kyiv days ending yesterday', async () => {
+    let nutritionFilter: any
+    let whoopFilter: any
+    const app = appFor(recommendationsRouter, () => ({
+      collection: (name: string) => {
+        if (name === 'personal_profile') return { findOne: async () => ({ tdee_kcal: 2500, deficit_kcal: 300, primary_goal: 'weight_loss', weight_kg: 93 }) }
+        if (name === 'weight_log') return { findOne: async () => ({ weight_kg: 93 }) }
+        if (name === 'nutrition_log') {
+          return {
+            find: (filter: any) => {
+              nutritionFilter = filter
+              return { toArray: async () => [] }
+            },
+          }
+        }
+        if (name === 'whoop_cycles') {
+          return {
+            find: (filter: any) => {
+              whoopFilter = filter
+              return { toArray: async () => [] }
+            },
+          }
+        }
+        throw new Error('unexpected collection ' + name)
+      },
+    }))
+
+    const res = await request(app).get('/api/weekly')
+    expect(res.status).toBe(200)
+    expect(nutritionFilter.date.$in).toEqual(LAST_7_FULL_DAYS)
+    expect(whoopFilter.date).toEqual({ $gte: '2026-09-25', $lte: '2026-10-01' })
+    expect(res.body.days.map((day: any) => day.date)).toEqual(LAST_7_FULL_DAYS)
+  })
 })
 
 describe('#1699 static guard for raw UTC today defaults', () => {
-  it('does not leave raw new Date().toISOString date defaults in routes/lib', () => {
+  it('does not leave direct or two-step raw new Date().toISOString date defaults in routes/lib', () => {
     const root = path.resolve(__dirname, '../..')
     const offenders: string[] = []
+    const allowlistComments = [
+      'UTC-OK',
+      'UTC OK',
+      'UTC timestamp',
+      'ISO timestamp',
+      'pure Date formatter',
+      'string-to-string helper',
+    ]
+
+    function hasAllowlistComment(lines: string[], idx: number) {
+      const window = lines.slice(Math.max(0, idx - 2), Math.min(lines.length, idx + 2))
+      return window.some(line => allowlistComments.some(marker => line.includes(marker)))
+    }
 
     function walk(dir: string) {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -137,8 +195,20 @@ describe('#1699 static guard for raw UTC today defaults', () => {
         if (!entry.isFile() || !entry.name.endsWith('.js')) continue
         const rel = path.relative(root, full)
         const text = fs.readFileSync(full, 'utf8')
-        text.split('\n').forEach((line, idx) => {
-          if (/new Date\(\)\.toISOString\(\)\.(split\('T'\)\[0\]|slice\(0,\s*10\))/.test(line)) {
+        const lines = text.split('\n')
+        const dateVars = new Set<string>()
+        lines.forEach((line, idx) => {
+          const directUtcDay = /new Date\(\)\.toISOString\(\)\.(split\('T'\)\[0\]|slice\(0,\s*10\))/.test(line)
+          const newDateMatch = line.match(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*new Date\(\)/)
+          if (newDateMatch) dateVars.add(newDateMatch[1])
+          const clonedDateMatch = line.match(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*new Date\(([A-Za-z_$][\w$]*)\)/)
+          if (clonedDateMatch && dateVars.has(clonedDateMatch[2])) dateVars.add(clonedDateMatch[1])
+          const twoStepUtcDay = Array.from(dateVars).some((name) => {
+            const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+            return new RegExp(`\\b${escaped}\\.toISOString\\(\\)\\.(split\\('T'\\)\\[0\\]|slice\\(0,\\s*10\\))`).test(line)
+          })
+
+          if ((directUtcDay || twoStepUtcDay) && !hasAllowlistComment(lines, idx)) {
             offenders.push(`${rel}:${idx + 1}:${line.trim()}`)
           }
         })

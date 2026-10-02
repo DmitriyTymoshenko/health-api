@@ -18,7 +18,7 @@ const { macroContribution } = require('../lib/nutrition-aggregate')
 // #1099 — GET /week: Kyiv-day + date-arithmetic helpers, reused rather than a
 // third private copy (lib/volume-by-muscle.js already has one private pair).
 const { formatDateKyiv, addDaysToDateString } = require('../lib/training-program')
-const { todayKyiv } = require('../lib/kyiv-day')
+const { todayKyiv, addDaysToKyivDay } = require('../lib/kyiv-day')
 
 // High-protein suggestions pool
 const HIGH_PROTEIN_POOL = [
@@ -599,12 +599,10 @@ module.exports = function (getDB) {
       // a partial day (breakfast logged, dinner not yet) that would drag avg_calories/
       // avg_protein down and fire false "day of undereating"/"protein deficit" patterns
       // (measured in audit #1409 §2.5). Same invariant as routes/whoop.js `/weekly-compare`.
-      const todayDate = new Date()
+      const today = todayKyiv()
       const days = []
       for (let i = 7; i >= 1; i--) {
-        const d = new Date(todayDate)
-        d.setDate(d.getDate() - i)
-        days.push(d.toISOString().split('T')[0])
+        days.push(addDaysToKyivDay(today, -i))
       }
       const startDate = days[0]
       const endDate = days[days.length - 1] // yesterday — last day IN the window
