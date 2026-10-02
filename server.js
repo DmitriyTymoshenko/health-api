@@ -75,6 +75,7 @@ async function connectDB() {
   await db.collection('life_habit_rules').createIndex({ habit_id: 1, active: 1 })
   await db.collection('life_rule_checks').createIndex({ rule_id: 1, day: 1 }, { unique: true })
   await db.collection('life_rule_checks').createIndex({ habit_id: 1, day: 1 })
+  await db.collection('life_nudges').createIndex({ habit_id: 1, key: 1 }, { unique: true }) // #1602
   await db.collection('life_day_goals').createIndex({ day: 1 })
   await db.collection('life_calendar_snapshots').createIndex({ day: 1 }, { unique: true }) // #1601
 

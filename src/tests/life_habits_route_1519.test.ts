@@ -36,7 +36,7 @@ function makeApp(seed: { habits?: any[]; rules?: any[]; checks?: any[] } = {}) {
 }
 
 describe('POST /api/life/habits', () => {
-  it('creates a build habit — frequency is always forced to daily (MVP)', async () => {
+  it('creates a build habit — omitted frequency defaults to daily; invalid kind is a 400 (#1602)', async () => {
     const { app } = makeApp()
     const res = await request(app)
       .post('/api/life/habits')
@@ -46,10 +46,13 @@ describe('POST /api/life/habits', () => {
         implementation: 'Після кави я відкриваю книгу о 8:00 на кухні',
         identity: 'Я людина, яка читає',
         two_minute: 'відкрити книгу і прочитати 1 сторінку',
-        frequency: { kind: 'weekly', days: [1, 3, 5] }, // MVP ignores this — always daily
       })
     expect(res.status).toBe(201)
     expect(res.body.frequency).toEqual({ kind: 'daily' })
+    const bad = await request(app)
+      .post('/api/life/habits')
+      .send({ type: 'build', name: 'x', frequency: { kind: 'weekly', days: [1, 3, 5] } })
+    expect(bad.status).toBe(400)
     expect(res.body.active).toBe(true)
     expect(res.body.archived_at).toBeNull()
     expect(res.body.type).toBe('build')

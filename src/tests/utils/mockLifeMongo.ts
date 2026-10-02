@@ -26,6 +26,12 @@ function matchesOne(value: any, cond: any): boolean {
       if (cond.$ne === null) return value !== null && value !== undefined
       return String(value) !== String(cond.$ne)
     }
+    if ('$gte' in cond || '$lte' in cond) {
+      if (value === undefined || value === null) return false
+      if ('$gte' in cond && !(value >= cond.$gte)) return false
+      if ('$lte' in cond && !(value <= cond.$lte)) return false
+      return true
+    }
     if ('$in' in cond) {
       const set = new Set((cond.$in as any[]).map((v) => String(v)))
       return set.has(String(value))
@@ -49,7 +55,12 @@ export function makeMockCollection(initial: Doc[] = []) {
       const result = docs.filter((d) => matches(d, filter))
       let sortField: string | null = null
       let sortDir = 1
+      let lim = Infinity
       return {
+        limit(n: number) {
+          lim = n
+          return this
+        },
         sort(spec: Doc) {
           const [field, dir] = Object.entries(spec)[0] as [string, number]
           sortField = field
@@ -62,7 +73,7 @@ export function makeMockCollection(initial: Doc[] = []) {
             const f = sortField
             out.sort((a, b) => ((a[f] > b[f] ? 1 : a[f] < b[f] ? -1 : 0)) * sortDir)
           }
-          return out
+          return out.slice(0, lim)
         },
       }
     },

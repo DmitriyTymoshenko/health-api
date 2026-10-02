@@ -1,8 +1,9 @@
 const { Router } = require('express')
 const { ObjectId } = require('mongodb')
 const { requireFields } = require('../lib/validate')
-const { todayKyiv, toKyivDay, isValidKyivDayFormat } = require('../lib/kyiv-day')
+const { todayKyiv, toKyivDay, isValidKyivDayFormat, addDaysToKyivDay } = require('../lib/kyiv-day')
 const { habitDoneToday, ruleCheckState, computeDaysClean } = require('../lib/life-rules')
+const trackers = require('../lib/life-trackers')
 const lifeToday = require('../lib/life-today')
 
 // #1519 (SPEC #1518) — `/me` MVP: habits (`life_habits`), rules
@@ -40,6 +41,42 @@ async function attachActiveRules(db, habits) {
     rulesByHabit[key].push(rule)
   }
   return habits.map((habit) => ({ ...habit, rules: rulesByHabit[String(habit._id)] || [] }))
+}
+
+
+// #1602 — day-by-day "done" map for ONE habit over [fromDay, toDay], used by
+// stats and nudges. Tracker habits are DERIVED from their source collection
+// (they own no life_rule_checks); rule-based habits from life_rule_checks.
+async function loadDoneByDay(db, habit, fromDay, toDay) {
+  const doneByDay = {}
+  if (habit.tracker) {
+    const coll = trackers.SOURCE_COLLECTION[habit.tracker.source]
+    const docs = await db.collection(coll).find({ date: { $gte: fromDay, $lte: toDay } }).toArray()
+    const states = trackers.trackerStatesByDay(habit.tracker, docs)
+    for (const [day, st] of states) doneByDay[day] = st.met
+    return { doneByDay, states }
+  }
+  if (habit.type === 'break') {
+    const rules = await db.collection('life_habit_rules').find({ habit_id: habit._id }).toArray()
+    const ids = rules.map((r) => r._id)
+    const fails = ids.length
+      ? await db.collection('life_rule_checks').find({ rule_id: { $in: ids }, done: false }).toArray()
+      : []
+    const failDays = new Set(fails.map((c) => c.day))
+    for (let d = fromDay; d <= toDay; d = addDaysToKyivDay(d, 1)) doneByDay[d] = !failDays.has(d)
+    return { doneByDay, failDays }
+  }
+  const rules = await db.collection('life_habit_rules').find({ habit_id: habit._id, active: true }).toArray()
+  if (!rules.length) return { doneByDay }
+  const checks = await db.collection('life_rule_checks').find({ habit_id: habit._id, day: { $gte: fromDay, $lte: toDay } }).toArray()
+  const byDay = {}
+  for (const c of checks) (byDay[c.day] = byDay[c.day] || {})[String(c.rule_id)] = c
+  for (const [day, map] of Object.entries(byDay)) doneByDay[day] = habitDoneToday(rules, map) === true
+  return { doneByDay }
+}
+
+function hhmmKyiv(date) {
+  return date.toLocaleTimeString('sv-SE', { timeZone: 'Europe/Kiev', hour: '2-digit', minute: '2-digit', hour12: false }).slice(0, 5)
 }
 
 module.exports = function (getDB, sources) {
@@ -109,6 +146,16 @@ module.exports = function (getDB, sources) {
         return res.status(400).json({ error: "type must be 'build' or 'break'" })
       }
       const db = getDB()
+      // #1602: frequency (daily|weekdays|weekly_n), tracker and triggers are validated, not silently dropped.
+      const freq = trackers.validateFrequency(req.body.frequency)
+      if (freq.error) return res.status(400).json({ error: freq.error })
+      const trk = trackers.validateTracker(req.body.tracker, { type: req.body.type })
+      if (trk.error) return res.status(400).json({ error: trk.error })
+      const trg = trackers.validateTriggers(req.body.triggers)
+      if (trg.error) return res.status(400).json({ error: trg.error })
+      if (trk.value && Array.isArray(req.body.rules) && req.body.rules.length) {
+        return res.status(400).json({ error: 'tracker habits take no rules (state is derived from the source)' })
+      }
       const doc = {
         type: req.body.type,
         name: req.body.name,
@@ -116,7 +163,9 @@ module.exports = function (getDB, sources) {
         identity: req.body.type === 'build' ? req.body.identity ?? null : null,
         implementation: req.body.implementation ?? null,
         two_minute: req.body.type === 'build' ? req.body.two_minute ?? null : null,
-        frequency: { kind: 'daily' },
+        frequency: freq.value,
+        tracker: trk.value,
+        triggers: trg.value,
         active: true,
         created_at: new Date(),
         archived_at: null,
@@ -172,6 +221,24 @@ module.exports = function (getDB, sources) {
       for (const f of HABIT_EDITABLE_FIELDS) {
         if (req.body[f] !== undefined) set[f] = req.body[f]
       }
+      // #1602: validated editable fields. `tracker: null` detaches the tracker.
+      if (req.body.frequency !== undefined) {
+        const v = trackers.validateFrequency(req.body.frequency)
+        if (v.error) return res.status(400).json({ error: v.error })
+        set.frequency = v.value
+      }
+      if (req.body.tracker !== undefined) {
+        const existing = await db.collection('life_habits').findOne({ _id: id })
+        if (!existing) return res.status(404).json({ error: 'Not found' })
+        const v = trackers.validateTracker(req.body.tracker, { type: set.type || existing.type })
+        if (v.error) return res.status(400).json({ error: v.error })
+        set.tracker = v.value
+      }
+      if (req.body.triggers !== undefined) {
+        const v = trackers.validateTriggers(req.body.triggers)
+        if (v.error) return res.status(400).json({ error: v.error })
+        set.triggers = v.value
+      }
       const result = await db.collection('life_habits').findOneAndUpdate(
         { _id: id },
         { $set: set },
@@ -213,6 +280,7 @@ module.exports = function (getDB, sources) {
       const db = getDB()
       const habit = await db.collection('life_habits').findOne({ _id: habitId })
       if (!habit) return res.status(404).json({ error: 'Habit not found' })
+      if (habit.tracker) return res.status(400).json({ error: 'tracker habits take no rules' })
 
       const activeCount = await db
         .collection('life_habit_rules')
@@ -319,6 +387,9 @@ module.exports = function (getDB, sources) {
             done: !!req.body.done,
             two_minute_version: !!req.body.two_minute_version,
             source: req.body.source,
+            // #1602: optional slip analysis (why / what triggered it) for a missed check-in.
+            ...(typeof req.body.slip_reason === 'string' ? { slip_reason: req.body.slip_reason.slice(0, 500) } : {}),
+            ...(typeof req.body.slip_trigger === 'string' ? { slip_trigger: req.body.slip_trigger.slice(0, 500) } : {}),
             checked_at: new Date(),
           },
         },
@@ -359,6 +430,114 @@ module.exports = function (getDB, sources) {
       const rule = await db.collection('life_habit_rules').findOne({ _id: ruleId })
       if (!rule) return res.status(404).json({ error: 'Rule not found' })
       await db.collection('life_rule_checks').deleteOne({ rule_id: ruleId, day })
+      res.json({ success: true })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+
+  // ---- #1602: stats + nudges ---------------------------------------------
+
+  // GET /api/life/habits/:id/stats?days=30&day= — streak, best streak, % in
+  // window, clean days (break), identity votes, don't-miss-twice. All DERIVED.
+  router.get('/habits/:id/stats', async (req, res) => {
+    try {
+      const id = toObjectId(req.params.id)
+      if (!id) return res.status(404).json({ error: 'Not found' })
+      const db = getDB()
+      const habit = await db.collection('life_habits').findOne({ _id: id })
+      if (!habit) return res.status(404).json({ error: 'Not found' })
+      const today = req.query.day || todayKyiv()
+      if (!isValidKyivDayFormat(today)) return res.status(400).json({ error: 'Invalid day format. Use YYYY-MM-DD' })
+      const windowDays = req.query.days === undefined ? 30 : Number(req.query.days)
+      if (!Number.isInteger(windowDays) || windowDays < 1 || windowDays > trackers.MAX_STATS_DAYS) {
+        return res.status(400).json({ error: `days must be an integer 1..${trackers.MAX_STATS_DAYS}` })
+      }
+      const createdDay = toKyivDay(habit.created_at)
+      // break habits: the creation day is day 0 (SPEC table), counting starts the next day
+      let startDay = habit.type === 'break' ? addDaysToKyivDay(createdDay, 1) : createdDay
+      const cap = addDaysToKyivDay(today, -(trackers.MAX_STATS_DAYS - 1))
+      if (startDay < cap) startDay = cap
+      const frequency = habit.frequency && habit.frequency.kind ? habit.frequency : { kind: 'daily' }
+      let stats
+      if (startDay > today) {
+        stats = trackers.computeStats({ habit: { ...habit, frequency, created_day: today }, today, doneByDay: {}, windowDays })
+      } else {
+        const { doneByDay, failDays } = await loadDoneByDay(db, habit, startDay, today)
+        let daysClean = null
+        if (habit.type === 'break') {
+          const flags = []
+          for (let d = startDay; d <= today; d = addDaysToKyivDay(d, 1)) flags.push(failDays.has(d))
+          daysClean = computeDaysClean(flags)
+        }
+        stats = trackers.computeStats({ habit: { ...habit, frequency, created_day: startDay }, today, doneByDay, windowDays, daysClean })
+      }
+      res.json({ habit_id: String(habit._id), day: today, type: habit.type, frequency, ...stats })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // GET /api/life/nudges/due?at=<ISO> — deterministic, read-only: which
+  // context nudges are due at instant `at` (default now). Lisa polls this and
+  // sends the reminder; POST /nudges/ack records it so it is not repeated.
+  router.get('/nudges/due', async (req, res) => {
+    try {
+      const at = req.query.at ? new Date(req.query.at) : new Date()
+      if (Number.isNaN(at.getTime())) return res.status(400).json({ error: 'Invalid at (ISO datetime expected)' })
+      const db = getDB()
+      const day = toKyivDay(at)
+      const now = { day, hhmm: hhmmKyiv(at), weekday: trackers.isoWeekday(day) }
+      const habits = (await db.collection('life_habits').find({ archived_at: null }).sort({ created_at: 1 }).toArray()).filter(
+        (h) => Array.isArray(h.triggers) && h.triggers.length
+      )
+      const ackedDocs = habits.length ? await db.collection('life_nudges').find({ day }).toArray() : []
+      const acked = new Set(ackedDocs.map((a) => `${a.habit_id}|${a.key}`))
+      const latestCache = {}
+      const latestDate = async (metric) => {
+        if (metric in latestCache) return latestCache[metric]
+        const coll = metric === 'weight' ? 'weight_log' : metric === 'steps' ? 'steps_log' : 'water_log'
+        const rows = await db.collection(coll).find({ date: { $lte: day } }).sort({ date: -1 }).limit(1).toArray()
+        return (latestCache[metric] = rows[0] ? rows[0].date : null)
+      }
+      const nudges = []
+      for (const habit of habits) {
+        const frequency = habit.frequency && habit.frequency.kind ? habit.frequency : { kind: 'daily' }
+        const wk = frequency.kind === 'weekly_n' ? trackers.weekStart(day) : day
+        const { doneByDay } = await loadDoneByDay(db, habit, wk, day)
+        let doneToday = !!doneByDay[day]
+        let scheduledToday = frequency.kind !== 'weekdays' || frequency.days.includes(now.weekday)
+        if (frequency.kind === 'weekly_n') {
+          const cnt = Object.values(doneByDay).filter(Boolean).length
+          doneToday = cnt >= frequency.n // week target reached — no more nudges this week
+        }
+        const latestDates = {}
+        for (const t of habit.triggers) if (t.kind === 'stale_metric') latestDates[t.metric] = await latestDate(t.metric)
+        nudges.push(...trackers.dueNudgesForHabit({ now, habit, doneToday, scheduledToday, latestDates, acked }))
+      }
+      res.json({ at: at.toISOString(), day: now.day, hhmm: now.hhmm, nudges })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
+  // POST /api/life/nudges/ack {habit_id, key} — mark a nudge as delivered (idempotent).
+  router.post('/nudges/ack', requireFields('habit_id', 'key'), async (req, res) => {
+    try {
+      const habitId = toObjectId(req.body.habit_id)
+      if (!habitId) return res.status(404).json({ error: 'Habit not found' })
+      const db = getDB()
+      const habit = await db.collection('life_habits').findOne({ _id: habitId })
+      if (!habit) return res.status(404).json({ error: 'Habit not found' })
+      // every nudge key ends with the Kyiv day it was due on (lib/life-trackers.js) — the ack is filed under that day
+      const day = String(req.body.key).split(':').pop()
+      if (!isValidKyivDayFormat(day)) return res.status(400).json({ error: 'key must end with :YYYY-MM-DD' })
+      await db.collection('life_nudges').findOneAndUpdate(
+        { habit_id: String(habitId), key: String(req.body.key) },
+        { $set: { habit_id: String(habitId), key: String(req.body.key), day, acked_at: new Date() } },
+        { upsert: true, returnDocument: 'after' }
+      )
       res.json({ success: true })
     } catch (err) {
       res.status(500).json({ error: err.message })
@@ -432,7 +611,29 @@ module.exports = function (getDB, sources) {
         failureDaysByHabit[key].add(c.day)
       }
 
+      // #1602: tracker habits — state DERIVED from the source collection for `day`.
+      const trackerStateByHabit = {}
+      await Promise.all(
+        habits
+          .filter((h) => h.tracker)
+          .map(async (h) => {
+            const { states } = await loadDoneByDay(db, h, day, day)
+            trackerStateByHabit[String(h._id)] = states.get(day) || null
+          })
+      )
+
       const habitsOut = habits.map((habit) => {
+        if (habit.tracker) {
+          const st = trackerStateByHabit[String(habit._id)]
+          return {
+            ...habit,
+            rules: [],
+            // present-but-below-threshold today is still in progress: neutral null, never false
+            done_today: st && st.met ? true : null,
+            days_clean: null,
+            tracker_state: { value: st ? st.value : null, threshold: habit.tracker.threshold, met: st ? st.met : null },
+          }
+        }
         const habitRules = rulesByHabit[String(habit._id)] || []
         const rulesOut = habitRules.map((rule) => ({
           ...rule,
