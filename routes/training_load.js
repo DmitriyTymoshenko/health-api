@@ -4,7 +4,8 @@ const { Router } = require('express')
 const { formatDateKyiv } = require('../lib/training-program')
 const { MUSCLE_GROUPS } = require('../lib/exercise-dictionaries')
 const { exerciseNamesFromWorkouts } = require('../lib/volume-by-muscle')
-const { buildWeeklySets, buildLoadRecovery, addDays } = require('../lib/training-load')
+const { buildPrFeed } = require('../lib/pr-feed')
+const { buildWeeklySets, buildLoadRecovery, buildProgramAdherence, addDays } = require('../lib/training-load')
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 
@@ -21,21 +22,29 @@ module.exports = function (getDB) {
       const from90 = addDays(today, -89)
       const from28 = addDays(today, -27)
 
-      const [workouts90, whoopWorkouts90, recovery28] = await Promise.all([
-        db.collection('workouts').find({ date: { $gte: from90, $lte: today } }).sort({ date: 1 }).toArray(),
+      const [allWorkouts, whoopWorkouts90, recovery28] = await Promise.all([
+        // ALL history: the PR feed needs the previous best, not just the last 90d
+        db.collection('workouts').find({ date: { $lte: today } }).sort({ date: 1 }).toArray(),
         db.collection('whoop_workouts').find({ date: { $gte: from90, $lte: today } }).toArray(),
         db.collection('whoop_recovery').find({ date: { $gte: from28, $lte: today } }).toArray(),
       ])
 
+      const workouts90 = allWorkouts.filter((w) => w.date >= from90)
       const names = exerciseNamesFromWorkouts(workouts90)
       const library = names.length
         ? await db.collection('exercises_library').find({ name: { $in: names } }).toArray()
         : []
       const libraryByName = new Map(library.map((e) => [String(e.name || '').toLowerCase(), e]))
 
+      // read-only: never seeds/writes the program (routes/training_program.js owns that)
+      const program = await db.collection('training_programs').findOne({ is_active: true }, { sort: { version: -1 } })
+      const weekly = buildWeeklySets({ workouts90, libraryByName, today, muscleOrder: MUSCLE_GROUPS, periodization: program && program.periodization })
+
       res.json({
         date: today,
-        ...buildWeeklySets({ workouts90, libraryByName, today, muscleOrder: MUSCLE_GROUPS }),
+        ...weekly,
+        prs: buildPrFeed(allWorkouts, { from: from90 }),
+        program_adherence: buildProgramAdherence({ program, workouts90, whoopWorkouts90, today, weekFrom: weekly.week.from, weekTo: weekly.week.to }),
         load_recovery: buildLoadRecovery({ today, whoopWorkouts90, recovery28, workouts90 }),
       })
     } catch (err) {

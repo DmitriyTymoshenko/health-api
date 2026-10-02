@@ -92,6 +92,15 @@ describe('training-load lib', () => {
   })
 })
 
+const PROGRAM = {
+  name: 'P', periodization: { wave_weeks: 4, phases: ['База', 'Білд', 'Пік', 'Deload'], start_date: '2026-09-09' },
+  schedule: { A: [1], B: [3] },
+  days: [
+    { key: 'A', title: 'День A', exercises: [{ name: 'Жим лежачи' }, { name: 'Присідання' }] },
+    { key: 'B', title: 'День B', exercises: [{ name: 'Підтягування' }] },
+  ],
+}
+
 function makeApp() {
   const data: Record<string, any[]> = {
     workouts: [{ date: '2026-09-30', exercises: [{ name: 'Жим лежачи', sets: sets(4) }] }],
@@ -101,7 +110,8 @@ function makeApp() {
   }
   const db = {
     collection: (n: string) => ({
-      find: () => ({ sort() { return this }, toArray: async () => data[n] || [] }),
+      find: (f: any) => ({ sort() { return this }, toArray: async () => (data[n] || []).filter((x: any) => !f?.date?.$gte || x.date >= f.date.$gte) }),
+      findOne: async () => (n === 'training_programs' ? PROGRAM : null),
     }),
   }
   const app = express()
@@ -117,8 +127,51 @@ describe('GET /api/workouts/training-load', () => {
     expect(res.body.groups.find((g: any) => g.muscle_group === 'chest').sets).toBe(4)
     expect(res.body.load_recovery.last_7d.avg_recovery).toBe(55)
   })
+  it('adds PR feed + program adherence + program-driven deload', async () => {
+    const res = await request(makeApp()).get('/api/workouts/training-load?date=2026-10-02')
+    expect(res.body.deload.source).toBe('program')
+    expect(res.body.deload.phase).toBe('Deload') // wave week 4 (30.09–06.10)
+    expect(res.body.deload.active).toBe(true)
+    expect(Array.isArray(res.body.prs)).toBe(true)
+    const pa = res.body.program_adherence
+    expect(pa.week_days.map((d: any) => d.weekday_label)).toEqual(['Пн', 'Ср'])
+    expect(pa.week_days[0].status).toBe('missed') // Mon 28.09, nothing logged
+    expect(pa.week_days[1].status).toBe('done') // Wed 30.09 logged
+    expect(pa.week_days[1].exercises_done).toBe(0) // logged Жим лежачи is not in День B
+    expect(pa.program_exercises_total).toBe(3)
+  })
   it('400 on bad date', async () => {
     const res = await request(makeApp()).get('/api/workouts/training-load?date=nope')
     expect(res.status).toBe(400)
+  })
+})
+
+describe('pr-feed + adherence lib', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { buildPrFeed } = require('../../lib/pr-feed')
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { buildProgramAdherence } = require('../../lib/training-load')
+  it('emits a PR only when a session beats the earlier best; first session is baseline', () => {
+    const w = (date: string, weight: number, reps: number) => ({ date, exercises: [{ name: 'Жим лежачи', sets: [{ weight_kg: weight, reps }] }] })
+    const feed = buildPrFeed([w('2026-09-01', 60, 8), w('2026-09-08', 60, 8), w('2026-09-15', 65, 8), w('2026-09-22', 62, 8)], { from: '2026-08-01' })
+    expect(feed).toHaveLength(1)
+    expect(feed[0]).toMatchObject({ date: '2026-09-15', exercise: 'Жим лежачи', kind: 'e1rm', weight_kg: 65 })
+    expect(feed[0].previous).toBeLessThan(feed[0].value)
+  })
+  it('bodyweight exercise ranks by reps', () => {
+    const w = (date: string, reps: number) => ({ date, exercises: [{ name: 'Підтягування', sets: [{ reps }] }] })
+    const feed = buildPrFeed([w('2026-09-01', 5), w('2026-09-08', 7)], {})
+    expect(feed[0]).toMatchObject({ kind: 'reps', value: 7, previous: 5 })
+  })
+  it('proposes a schedule on real weekdays (Tue/Thu) only as a suggestion', () => {
+    const mk = (date: string) => ({ date, exercises: [{ name: 'Жим лежачи', sets: [{ reps: 8, weight_kg: 50 }] }] })
+    const r = buildProgramAdherence({
+      program: { ...PROGRAM, schedule: { A: [1], B: [3] } },
+      workouts90: [mk('2026-09-22'), mk('2026-09-24'), mk('2026-09-29'), mk('2026-10-01')], // Tue, Thu, Tue, Thu
+      whoopWorkouts90: [], today: '2026-10-02', weekFrom: '2026-09-28', weekTo: '2026-10-04',
+    })
+    expect(r.schedule_proposal.weekdays.map((d: any) => d.label)).toEqual(['Вт', 'Чт'])
+    expect(r.sessions_on_schedule_90d).toBe(0)
+    expect(r.unscheduled_sessions).toEqual(['2026-09-29', '2026-10-01'])
   })
 })
