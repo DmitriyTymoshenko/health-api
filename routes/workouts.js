@@ -686,6 +686,18 @@ module.exports = function (getDB) {
     return prMap
   }
 
+  // GET /api/workouts/prs[?exercise=NAME] (#1692 п.6) — personal records per exercise
+  router.get('/prs', async (req, res) => {
+    try {
+      const exercise = req.query.exercise ? String(req.query.exercise) : null
+      const prMap = await calculatePRs(getDB(), exercise)
+      const prs = Object.values(prMap).map(p => ({ ...p, history: undefined }))
+      res.json({ count: prs.length, prs })
+    } catch (err) {
+      res.status(500).json({ error: err.message })
+    }
+  })
+
   // POST /api/workouts — with PR detection
   router.post('/', async (req, res) => {
     try {
