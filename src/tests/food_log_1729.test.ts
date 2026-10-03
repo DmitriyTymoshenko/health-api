@@ -18,6 +18,9 @@ const LIB: Doc[] = [
   { _id: 'b1', name: 'Банан', name_ua: 'Банан', kcal_per_100g: 89, protein_per_100g: 1, fat_per_100g: 0.3, carbs_per_100g: 23, fiber_per_100g: 2.6, sugar_per_100g: 12, serving_size_g: 120, aliases: ['banana'] },
   { _id: 'y1', name: 'Yummy Bar', name_ua: 'Батончик FitWin YummY Bar', brand: 'FitWin', kcal_per_100g: 353, protein_per_100g: 30, fat_per_100g: 12, carbs_per_100g: 30, sat_fat_per_100g: 5, serving_size_g: 55 },
   { _id: 's1', name: 'Сирники', name_ua: 'Сирники', kcal_per_100g: 220, protein_per_100g: 14, fat_per_100g: 9, carbs_per_100g: 21 },
+  { _id: 'pg1', name: 'Протеїнова гранола Protein Go', name_ua: 'Протеїнова гранола Protein Go', kcal_per_100g: 416, protein_per_100g: 22, fat_per_100g: 17, carbs_per_100g: 43, aliases: ['гранола', 'протеїнова гранола', 'protein go granola'], use_count: 0 },
+  { _id: 'go1', name: 'Go On Nutrition Protein Granola (брауні вишня)', name_ua: 'Гранола Go On Nutrition Protein Granola 300 г брауні вишня', kcal_per_100g: 408, protein_per_100g: 21, fat_per_100g: 13, carbs_per_100g: 46, aliases: ['granola', 'гранола', 'go on granola'], use_count: 2 },
+  { _id: 'al1', name: 'Кокосове молоко Alpro Coconut Original', name_ua: 'Кокосове молоко Alpro Coconut Original', kcal_per_100g: 20, protein_per_100g: 0.1, fat_per_100g: 0.9, carbs_per_100g: 2.7, aliases: ['кокосове молоко', 'coconut milk', 'алпро кокосове'], use_count: 0 },
 ]
 
 function app() {
@@ -85,6 +88,23 @@ describe('POST log-food (#1729)', () => {
     const r = await request(a).post('/').send({ items: [{ name: 'сирники' }] })
     expect(r.body.not_found[0].reason).toBe('no_amount')
     expect(logged).toHaveLength(0)
+  })
+  test('#1960: later partial aliases must not downgrade exact library matches', async () => {
+    const { a } = app()
+    const r = await request(a).post('/').send({
+      items: [
+        { name: 'Протеїнова гранола Protein Go', grams: 10 },
+        { name: 'кокосове молоко', grams: 100 },
+      ],
+      meal_type: 'snack',
+      date: '2026-10-03',
+    })
+    expect(r.status).toBe(201)
+    expect(r.body.not_found).toEqual([])
+    expect(r.body.logged.map((x: Doc) => x.food_name)).toEqual([
+      'Протеїнова гранола Protein Go',
+      'Кокосове молоко Alpro Coconut Original',
+    ])
   })
   test('mealByHour is by Kyiv hour', () => {
     expect(F.mealByHour(new Date('2026-10-02T06:00:00Z'))).toBe('breakfast') // 09:00 Kyiv
