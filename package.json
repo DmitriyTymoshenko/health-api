@@ -9,7 +9,7 @@
     "build": "tsc",
     "test": "jest",
     "test:watch": "jest --watch",
-    "deploy": "npm test && health-deploy.sh"
+    "deploy": "bash ../scripts/deploy-lock.sh --label health-api-deploy -- bash -lc 'npm test && health-deploy.sh'"
   },
   "dependencies": {
     "cors": "^2.8.5",
