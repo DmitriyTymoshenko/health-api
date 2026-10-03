@@ -346,6 +346,7 @@ app.use('/api/readiness', require('./routes/readiness')(getDB)) // #1292 Ф3 —
 app.use('/api/life', require('./routes/life_habits')(getDB))
 app.use('/api/life', require('./routes/life_day_goals')(getDB))
 app.use('/api/life', require('./routes/life_calendar')(getDB)) // #1601
+app.use('/api/life', require('./routes/life_evening')(getDB)) // #1603
 app.use('/api/life', require('./routes/life_profile')(getDB))
 
 // Health check
