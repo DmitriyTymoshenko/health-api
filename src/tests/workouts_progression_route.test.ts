@@ -96,6 +96,8 @@ describe('GET /api/workouts/progression', () => {
     expect(res.body.increment_step_kg).toBe(2.5)
     expect(res.body.suggested_weight_kg).toBe(75.5)
     expect(res.body.suggested_weight_display).toEqual({ value: 75.5, unit: 'kg' })
+    expect(res.body.working_weight_state).toBe('not_established')
+    expect(res.body.working_weight_established).toBe(false)
   })
 
   it('exercise not in exercises_library at all -> equipment/weight_unit null, still evaluates from program+sessions', async () => {

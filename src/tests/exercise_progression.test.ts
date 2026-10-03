@@ -309,6 +309,8 @@ describe('increment step + suggested weight — history first, equipment fallbac
     expect(r.step_source).toBe('unknown')
     expect(r.increment_step_kg).toBeNull()
     expect(r.suggested_weight_kg).toBeNull()
+    expect(r.working_weight_state).toBe('not_established')
+    expect(r.working_weight_established).toBe(false)
   })
 
   it('< 2 distinct historical working weights + barbell -> uses the equipment step and returns the add-weight number', () => {
@@ -321,6 +323,8 @@ describe('increment step + suggested weight — history first, equipment fallbac
     expect(r.increment_step_kg).toBe(2.5)
     expect(r.suggested_weight_kg).toBe(75.5)
     expect(r.suggested_weight_display).toEqual({ value: 75.5, unit: 'kg' })
+    expect(r.working_weight_state).toBe('not_established')
+    expect(r.working_weight_established).toBe(false)
   })
 
   it('< 2 distinct historical working weights + dumbbell -> uses a 2kg equipment step', () => {
@@ -332,6 +336,8 @@ describe('increment step + suggested weight — history first, equipment fallbac
     expect(r.step_source).toBe('equipment')
     expect(r.increment_step_kg).toBe(2)
     expect(r.suggested_weight_kg).toBe(42)
+    expect(r.working_weight_state).toBe('not_established')
+    expect(r.working_weight_established).toBe(false)
   })
 
   it('< 2 distinct historical working weights + machine -> uses a 5kg equipment step for reduce-weight too', () => {
@@ -344,6 +350,8 @@ describe('increment step + suggested weight — history first, equipment fallbac
     expect(r.increment_step_kg).toBe(5)
     expect(r.suggested_weight_kg).toBe(75)
     expect(r.suggested_weight_display).toEqual({ value: 75, unit: 'kg' })
+    expect(r.working_weight_state).toBe('not_established')
+    expect(r.working_weight_established).toBe(false)
   })
 
   it('>= 2 distinct historical working weights -> step = minimal positive gap, suggested_weight in the exercise\'s own unit', () => {
@@ -360,6 +368,8 @@ describe('increment step + suggested weight — history first, equipment fallbac
     expect(r.suggested_weight_kg).toBeCloseTo(114, 5)
     expect(r.suggested_weight_display.unit).toBe('lb')
     expect(r.suggested_weight_display.value).toBeCloseTo(114 / 0.45359237, 2)
+    expect(r.working_weight_state).toBe('established')
+    expect(r.working_weight_established).toBe(true)
   })
 
   it('weight_unit=kg displays the canonical kg value unchanged', () => {
