@@ -1,4 +1,5 @@
 const { Router } = require('express')
+const { getProductOffers, refreshDueProductOffers } = require('../lib/product-offer-cache')
 const { validateSupplementKnowledgeCycle, validateKnowledgeCycleInvariant } = require('../lib/validate')
 const { ensureAutoCycleForSupplement } = require('../lib/supplement-autocycle')
 const { cycleStatus, cycleWindow } = require('../lib/cycle-status')
@@ -44,6 +45,17 @@ const DEFAULT_CYCLES = [
 
 module.exports = function (getDB) {
   const router = Router()
+  // Cache-only reads; public-source refresh does not invoke recommendation/LLM code.
+  router.get('/offers', async (req, res) => {
+    try { res.json(await getProductOffers(getDB())) }
+    catch { res.status(503).json({ error: 'Product catalog unavailable' }) }
+  })
+  router.post('/offers/refresh', async (req, res) => {
+    try {
+      const result = await refreshDueProductOffers(getDB())
+      res.status(result.status === 'deferred_cpu' ? 503 : 200).json(result)
+    } catch { res.status(503).json({ error: 'Product refresh unavailable' }) }
+  })
 
   async function ensureSeed(db) {
     const count = await db.collection('supplement_catalog').countDocuments()
