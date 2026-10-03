@@ -105,7 +105,7 @@ describe('buildFieldsToWrite — RED: continuous/cycle invariant violation block
   })
 })
 
-describe('buildFieldsToWrite — GREEN: real curated data passes every gate for all 14 catalog items', () => {
+describe('buildFieldsToWrite — legacy curated attribution is not automatically verified', () => {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const curated = require('../../data/supplement-knowledge-curated-1485.json')
 
@@ -114,22 +114,15 @@ describe('buildFieldsToWrite — GREEN: real curated data passes every gate for 
     expect(ids).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 19])
   })
 
-  it('every record\'s continuous_source survives grounding (ref present, kind !== not_covered)', () => {
+  it('legacy refs with inferred lesson subsets or URL-only evidence are not trusted', () => {
     for (const record of curated) {
       const { set, dropped } = buildFieldsToWrite(record, REAL_CORPUS)
-      expect(dropped).toEqual([])
-      expect(set.continuous_source).toBeDefined()
-      expect(set.continuous_source.kind).not.toBe('not_covered')
-      expect(set.continuous_source.ref).toBeTruthy()
+      expect(set.continuous_source).toBeUndefined()
+      expect(dropped.some((d: any) => d.field === 'continuous_source')).toBe(true)
+      // The validation change does not rewrite the owner's schedule or doses.
+      expect(set.continuous).toBe(record.continuous)
+      expect(set.active_ingredients).toEqual(record.active_ingredients)
     }
-  })
-
-  it('at least 8 of the 14 records are koliada-sourced (F-A acceptance)', () => {
-    const koliadaCount = curated.filter((record: any) => {
-      const { set } = buildFieldsToWrite(record, REAL_CORPUS)
-      return set.continuous_source && set.continuous_source.by === 'koliada'
-    }).length
-    expect(koliadaCount).toBeGreaterThanOrEqual(8)
   })
 
   it('every active_ingredients[] entry across all 14 records has a nutrient_key (F-C acceptance)', () => {
@@ -154,12 +147,12 @@ describe('buildFieldsToWrite — GREEN: real curated data passes every gate for 
     }
   })
 
-  it('every interactions[] entry across all 14 records survives grounding (0 silently dropped)', () => {
+  it('legacy interactions without exact source evidence are dropped explicitly', () => {
     for (const record of curated) {
       const { set, dropped } = buildFieldsToWrite(record, REAL_CORPUS)
       const claimedCount = (record.interactions || []).length
-      expect(set.interactions).toHaveLength(claimedCount)
-      expect(dropped.filter((d: any) => String(d.field).includes('interactions'))).toEqual([])
+      expect(set.interactions).toHaveLength(0)
+      expect(dropped.filter((d: any) => String(d.field).includes('interactions'))).toHaveLength(claimedCount)
     }
   })
 })

@@ -127,10 +127,11 @@ describe('GET /api/catalog/recommendations — C1', () => {
     const staleWarning = res.body.warnings.find((w: any) => w.type === 'stale_lab')
     expect(staleWarning).toMatchObject({ marker: 'vitamin_d' })
     expect(res.body.recommendations[0].verdict.by).toBeTruthy()
-    expect(res.body.recommendations[0].verdict.ref).toBeTruthy()
+    expect(res.body.recommendations[0].verdict).toEqual({ kind: 'not_covered', by: 'external' })
+    expect(res.body.recommendations[0].provenance.state).toBe('unverified')
   })
 
-  it('every recommendation carries verdict.by and verdict.ref', async () => {
+  it('URL-only recommendations carry unverified provenance without false source refs', async () => {
     mockGeminiFetch([
       { key: 'mg', name: 'Magnesium Glycinate', reason: 'sleep support', source: 'whoop', verdict: { kind: 'neutral', by: 'external', ref: 'https://examine.com/magnesium' }, suggested_dose: '400mg', suggested_schedule: 'evening', continuous: true },
     ])
@@ -138,7 +139,8 @@ describe('GET /api/catalog/recommendations — C1', () => {
     const res = await request(buildApp(db)).get('/api/catalog/recommendations')
     for (const rec of res.body.recommendations) {
       expect(rec.verdict.by).toBeTruthy()
-      expect(rec.verdict.ref).toBeTruthy()
+      expect(rec.verdict.ref).toBeUndefined()
+      expect(rec.provenance.state).toBe('unverified')
     }
   })
 })
