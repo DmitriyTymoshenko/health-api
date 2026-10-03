@@ -299,8 +299,8 @@ describe('TOP_OF_RANGE_RULE — parameterized across all 4 candidate variants (o
   })
 })
 
-describe('increment step + suggested weight — derived from THIS exercise\'s own history, never a constant', () => {
-  it('< 2 distinct historical working weights -> step_source unknown, suggested_weight_kg null', () => {
+describe('increment step + suggested weight — history first, equipment fallback only when history has no step', () => {
+  it('< 2 distinct historical working weights + unknown equipment -> step_source unknown, suggested_weight_kg null', () => {
     const r = evaluateProgression({
       exerciseName: 'Розведення в сторони', weightUnit: 'lb', targetRepsRaw: '8-10',
       sessions: [session('2026-09-09', [{ weight_kg: 235, reps: 10 }, { weight_kg: 235, reps: 10 }, { weight_kg: 235, reps: 10 }])],
@@ -311,9 +311,44 @@ describe('increment step + suggested weight — derived from THIS exercise\'s ow
     expect(r.suggested_weight_kg).toBeNull()
   })
 
+  it('< 2 distinct historical working weights + barbell -> uses the equipment step and returns the add-weight number', () => {
+    const r = evaluateProgression({
+      exerciseName: 'Жим лежачи', equipment: 'barbell', weightUnit: 'kg', targetRepsRaw: '8-10',
+      sessions: [session('2026-09-09', [{ weight_kg: 73, reps: 10 }, { weight_kg: 73, reps: 10 }])],
+    })
+    expect(r.next_action).toBe('add_weight')
+    expect(r.step_source).toBe('equipment')
+    expect(r.increment_step_kg).toBe(2.5)
+    expect(r.suggested_weight_kg).toBe(75.5)
+    expect(r.suggested_weight_display).toEqual({ value: 75.5, unit: 'kg' })
+  })
+
+  it('< 2 distinct historical working weights + dumbbell -> uses a 2kg equipment step', () => {
+    const r = evaluateProgression({
+      exerciseName: 'Жим гантелей лежачи', equipment: 'dumbbell', weightUnit: 'kg', targetRepsRaw: '8-10',
+      sessions: [session('2026-09-09', [{ weight_kg: 40, reps: 10 }, { weight_kg: 40, reps: 10 }])],
+    })
+    expect(r.next_action).toBe('add_weight')
+    expect(r.step_source).toBe('equipment')
+    expect(r.increment_step_kg).toBe(2)
+    expect(r.suggested_weight_kg).toBe(42)
+  })
+
+  it('< 2 distinct historical working weights + machine -> uses a 5kg equipment step for reduce-weight too', () => {
+    const r = evaluateProgression({
+      exerciseName: 'Жим ногами', equipment: 'machine', weightUnit: 'kg', targetRepsRaw: '8-12',
+      sessions: [session('2026-09-09', [{ weight_kg: 80, reps: 5 }, { weight_kg: 80, reps: 5 }])],
+    })
+    expect(r.next_action).toBe('reduce_weight')
+    expect(r.step_source).toBe('equipment')
+    expect(r.increment_step_kg).toBe(5)
+    expect(r.suggested_weight_kg).toBe(75)
+    expect(r.suggested_weight_display).toEqual({ value: 75, unit: 'kg' })
+  })
+
   it('>= 2 distinct historical working weights -> step = minimal positive gap, suggested_weight in the exercise\'s own unit', () => {
     const r = evaluateProgression({
-      exerciseName: 'Розведення в сторони', weightUnit: 'lb', targetRepsRaw: '8-10',
+      exerciseName: 'Розведення в сторони', equipment: 'barbell', weightUnit: 'lb', targetRepsRaw: '8-10',
       sessions: [
         session('2026-08-01', [{ weight_kg: 100, reps: 10 }]),
         session('2026-09-09', [{ weight_kg: 107, reps: 10 }]),

@@ -81,6 +81,23 @@ describe('GET /api/workouts/progression', () => {
     expect(res.body.equipment).toBe('barbell')
   })
 
+  it('one weighted session + equipment fallback -> returns a suggested weight instead of step_source unknown (#1315)', async () => {
+    const app = makeApp({
+      exercises: [{ name: 'Жим в нахилі', equipment: 'barbell', weight_unit: 'kg' }],
+      workouts: [{ date: '2026-09-09', exercises: [{ name: 'Жим в нахилі', sets: [
+        { weight_kg: 73, reps: 12 }, { weight_kg: 73, reps: 12 },
+      ] }] }],
+      program: PROGRAM,
+    })
+    const res = await request(app).get('/api/workouts/progression').query({ name: 'Жим в нахилі' })
+    expect(res.status).toBe(200)
+    expect(res.body.next_action).toBe('add_weight')
+    expect(res.body.step_source).toBe('equipment')
+    expect(res.body.increment_step_kg).toBe(2.5)
+    expect(res.body.suggested_weight_kg).toBe(75.5)
+    expect(res.body.suggested_weight_display).toEqual({ value: 75.5, unit: 'kg' })
+  })
+
   it('exercise not in exercises_library at all -> equipment/weight_unit null, still evaluates from program+sessions', async () => {
     const app = makeApp({
       exercises: [],
