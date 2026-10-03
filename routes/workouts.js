@@ -1,5 +1,6 @@
 const { Router } = require('express')
-const { calc1RM, pickBestSet } = require('../lib/workout-sets')
+const { deriveWorkoutMetrics, buildPRs } = require('../lib/workout-metrics')
+const { pickBestSet } = require('../lib/workout-sets')
 const { attachWhoop } = require('../lib/whoop-link') // #1692 п.4
 const { evaluateProgression } = require('../lib/exercise-progression')
 const { buildExerciseTrends } = require('../lib/exercise-trends')
@@ -84,7 +85,11 @@ module.exports = function (getDB) {
         .skip(Number(skip))
         .limit(Number(limit))
         .toArray()
-      res.json(await attachWhoop(db, data))
+      const derived = await deriveWorkoutMetrics(db, data)
+      const response = data.map((w, i) => ({ ...w, exercises: (w.exercises || []).map((ex, j) => ({
+        ...ex, metrics: { sets: derived[i].exercises[j].sets },
+      })) }))
+      res.json(await attachWhoop(db, response))
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -100,7 +105,11 @@ module.exports = function (getDB) {
         .sort({ date: -1 })
         .limit(Number(limit))
         .toArray()
-      res.json(await attachWhoop(db, data))
+      const derived = await deriveWorkoutMetrics(db, data)
+      const response = data.map((w, i) => ({ ...w, exercises: (w.exercises || []).map((ex, j) => ({
+        ...ex, metrics: { sets: derived[i].exercises[j].sets },
+      })) }))
+      res.json(await attachWhoop(db, response))
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -129,8 +138,8 @@ module.exports = function (getDB) {
         : []
       const libraryByName = new Map(library.map(ex => [String(ex.name || '').toLowerCase(), ex]))
 
-      const current = summarizeVolumeByMuscle(currentWorkouts, libraryByName, MUSCLE_GROUPS)
-      const prev = summarizeVolumeByMuscle(prevWorkouts, libraryByName, MUSCLE_GROUPS)
+      const current = summarizeVolumeByMuscle(await deriveWorkoutMetrics(db, currentWorkouts), libraryByName, MUSCLE_GROUPS)
+      const prev = summarizeVolumeByMuscle(await deriveWorkoutMetrics(db, prevWorkouts), libraryByName, MUSCLE_GROUPS)
 
       res.json({
         period: bounds.period,
@@ -443,10 +452,11 @@ module.exports = function (getDB) {
       const { name } = req.query
       if (!name) return res.status(400).json({ error: 'name required' })
 
-      const workouts = await db.collection('workouts')
+      const rawWorkouts = await db.collection('workouts')
         .find({ 'exercises.name': name })
         .sort({ date: -1 })
         .toArray()
+      const workouts = await deriveWorkoutMetrics(db, rawWorkouts)
 
       const history = workouts.map(w => {
         const ex = w.exercises.find(e => e.name === name)
@@ -465,6 +475,8 @@ module.exports = function (getDB) {
           best_reps: best.reps,
           best_reps_set: best.reps,
           total_reps,
+          metric_kind: sets[0]?.metric_kind || 'repetitions',
+          total_duration_seconds: sets.reduce((sum, set) => sum + (set.duration_seconds || 0), 0),
           est_1rm: best.orm,
         }
       }).filter(Boolean)
@@ -482,11 +494,12 @@ module.exports = function (getDB) {
       const { name } = req.query
       if (!name) return res.status(400).json({ error: 'name required' })
 
-      const workouts = await db.collection('workouts')
+      const rawWorkouts = await db.collection('workouts')
         .find({ 'exercises.name': name })
         .sort({ date: 1 })
         .limit(30)
         .toArray()
+      const workouts = await deriveWorkoutMetrics(db, rawWorkouts)
 
       const progress = workouts.map(w => {
         const ex = w.exercises.find(e => e.name === name)
@@ -506,6 +519,8 @@ module.exports = function (getDB) {
           est_1rm: best.orm,
           best_reps_set: best.reps,
           total_reps,
+          metric_kind: sets[0]?.metric_kind || 'repetitions',
+          total_duration_seconds: sets.reduce((sum, set) => sum + (set.duration_seconds || 0), 0),
         }
       }).filter(Boolean)
 
@@ -586,10 +601,11 @@ module.exports = function (getDB) {
         }
       }
 
-      const workouts = await db.collection('workouts')
+      const rawWorkouts = await db.collection('workouts')
         .find({}, { projection: { date: 1, exercises: 1 } })
         .sort({ date: 1 })
         .toArray()
+      const workouts = await deriveWorkoutMetrics(db, rawWorkouts)
 
       const exerciseNames = exerciseNamesFromWorkouts(workouts)
       const library = exerciseNames.length > 0
@@ -607,6 +623,11 @@ module.exports = function (getDB) {
 
   // === PERSONAL RECORDS (PR) ===
 
+  async function readPRLibrary(db, workouts) {
+    const names = exerciseNamesFromWorkouts(workouts)
+    return names.length ? db.collection('exercises_library').find({ name: { $in: names } }).toArray() : []
+  }
+
   // Helper: calculate PRs from all workouts for given exercises
   async function calculatePRs(db, exerciseFilter) {
     const filter = exerciseFilter
@@ -618,89 +639,10 @@ module.exports = function (getDB) {
       .sort({ date: 1 })
       .toArray()
 
-    const prMap = {} // exercise_name -> { max_weight, max_volume, max_1rm, max_reps }
-
-    // #1692 п.5: e1RM is meaningful only for free weights (barbell/dumbbell).
-    // Machines/cables/other -> best set (weight x reps) instead of a fake 1RM.
-    let lib = []
-    try {
-      lib = await db.collection('exercises_library').find({}, { projection: { name: 1, equipment: 1 } }).toArray()
-    } catch (_) { /* no library -> everything falls back to best_set */ }
-    const equipByName = new Map(lib.map(l => [l.name, l.equipment]))
-    const isFreeWeight = (name) => {
-      const eq = equipByName.get(name)
-      return eq === 'barbell' || eq === 'dumbbell'
-    }
-
-    for (const w of workouts) {
-      if (!w.exercises) continue
-      for (const ex of w.exercises) {
-        if (exerciseFilter && ex.name !== exerciseFilter) continue
-        const sets = ex.sets || []
-        if (sets.length === 0) continue
-
-        if (!prMap[ex.name]) {
-          prMap[ex.name] = {
-            exercise: ex.name,
-            muscle_group: ex.muscle_group || null,
-            max_weight: { value: 0, date: null, reps: null },
-            max_volume: { value: 0, date: null },
-            max_1rm: { value: 0, date: null, weight: null, reps: null },
-            max_1rm_kind: isFreeWeight(ex.name) ? 'e1rm' : 'best_set',
-            max_reps: { value: 0, date: null, weight: null },
-            total_sessions: 0,
-            history: [],
-          }
-        }
-
-        const pr = prMap[ex.name]
-        pr.total_sessions++
-
-        // Session metrics
-        const sessionVolume = sets.reduce((sum, s) => sum + (s.weight_kg || 0) * (s.reps || 0), 0)
-        const roundedVolume = Math.round(sessionVolume)
-
-        for (const s of sets) {
-          const weight = s.weight_kg || 0
-          const reps = s.reps || 0
-          const orm = pr.max_1rm_kind === 'e1rm' ? calc1RM(weight, reps) : Math.round(weight * reps)
-
-          // Max weight PR
-          if (weight > pr.max_weight.value) {
-            pr.max_weight = { value: weight, date: w.date, reps }
-          }
-
-          // Max estimated 1RM PR
-          if (orm > pr.max_1rm.value) {
-            pr.max_1rm = { value: orm, date: w.date, weight, reps }
-          }
-
-          // Max reps at any weight > 0
-          if (weight > 0 && reps > pr.max_reps.value) {
-            pr.max_reps = { value: reps, date: w.date, weight }
-          }
-        }
-
-        // Max volume PR (per session)
-        if (roundedVolume > pr.max_volume.value) {
-          pr.max_volume = { value: roundedVolume, date: w.date }
-        }
-
-        // Track history for timeline
-        const bestORM = sets.reduce((best, s) => {
-          const orm = calc1RM(s.weight_kg, s.reps)
-          return orm > best ? orm : best
-        }, 0)
-        pr.history.push({
-          date: w.date,
-          est_1rm: bestORM,
-          max_weight: Math.max(...sets.map(s => s.weight_kg || 0)),
-          volume: roundedVolume,
-        })
-      }
-    }
-
-    return prMap
+    const library = await readPRLibrary(db, workouts)
+    const derived = await deriveWorkoutMetrics(db, workouts)
+    const prMap = buildPRs(derived, library)
+    return exerciseFilter ? Object.fromEntries(Object.entries(prMap).filter(([name]) => name === exerciseFilter)) : prMap
   }
 
   // GET /api/workouts/prs[?exercise=NAME] (#1692 п.6) — personal records per exercise
@@ -745,81 +687,28 @@ module.exports = function (getDB) {
       // Calculate PRs BEFORE inserting to detect new records
       let newPRs = []
       if (doc.exercises && doc.exercises.length > 0) {
-        const exerciseNames = doc.exercises.map(e => e.name)
         const oldPRs = await calculatePRs(db)
 
-        // Insert the workout
+        const currentPRs = buildPRs(await deriveWorkoutMetrics(db, [doc]), await readPRLibrary(db, [doc]))
+
+        // Insert the workout after all metric reads succeed.
         const result = await db.collection('workouts').insertOne(doc)
         const insertedDoc = { ...doc, _id: result.insertedId }
 
-        // Check each exercise for new PRs
-        for (const ex of doc.exercises) {
-          const sets = ex.sets || []
-          if (sets.length === 0) continue
-
-          const oldPR = oldPRs[ex.name]
-          const exercisePRs = []
-
-          for (const s of sets) {
-            const weight = s.weight_kg || 0
-            const reps = s.reps || 0
-            const orm = calc1RM(weight, reps)
-
-            // New max weight?
-            if (!oldPR || weight > oldPR.max_weight.value) {
-              exercisePRs.push({
-                type: 'max_weight',
-                value: weight,
-                previous: oldPR ? oldPR.max_weight.value : 0,
-                reps,
-              })
-            }
-
-            // New 1RM?
-            if (!oldPR || orm > oldPR.max_1rm.value) {
-              exercisePRs.push({
-                type: 'max_1rm',
-                value: orm,
-                previous: oldPR ? oldPR.max_1rm.value : 0,
-                weight,
-                reps,
-              })
-            }
-
-            // New max reps at weight?
-            if (weight > 0 && (!oldPR || reps > oldPR.max_reps.value)) {
-              exercisePRs.push({
-                type: 'max_reps',
-                value: reps,
-                previous: oldPR ? oldPR.max_reps.value : 0,
-                weight,
-              })
-            }
-          }
-
-          // Check session volume
-          const sessionVolume = Math.round(sets.reduce((sum, s) => sum + (s.weight_kg || 0) * (s.reps || 0), 0))
-          if (!oldPR || sessionVolume > oldPR.max_volume.value) {
-            exercisePRs.push({
-              type: 'max_volume',
-              value: sessionVolume,
-              previous: oldPR ? oldPR.max_volume.value : 0,
+        for (const [name, current] of Object.entries(currentPRs)) {
+          const old = oldPRs[name]
+          const records = []
+          for (const type of ['max_weight', 'max_1rm', 'max_reps', 'max_volume', 'max_duration_seconds']) {
+            const value = current[type].value
+            const previous = old?.[type]?.value || 0
+            if (value > previous) records.push({
+              type, value, previous,
+              ...(current[type].reps != null ? { reps: current[type].reps } : {}),
+              ...(current[type].weight != null ? { weight: current[type].weight } : {}),
+              ...(type === 'max_1rm' ? { kind: current.max_1rm_kind } : {}),
             })
           }
-
-          if (exercisePRs.length > 0) {
-            // Deduplicate — keep only the best per type
-            const bestByType = {}
-            for (const pr of exercisePRs) {
-              if (!bestByType[pr.type] || pr.value > bestByType[pr.type].value) {
-                bestByType[pr.type] = pr
-              }
-            }
-            newPRs.push({
-              exercise: ex.name,
-              records: Object.values(bestByType),
-            })
-          }
+          if (records.length) newPRs.push({ exercise: name, records })
         }
 
         return res.status(201).json({
