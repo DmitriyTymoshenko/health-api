@@ -12,6 +12,7 @@ const { resolveDayTargets } = require('../lib/targets-resolver')
 // (#862 class) — reuse the SAME resolver aggregateDay/summaryHandler already use,
 // not a re-declared local sum (BASE RULE, lessons-learned "reuse by name").
 const { macroContribution } = require('../lib/nutrition-aggregate')
+const { withDerivedChallengeValues } = require('../lib/challenge-current') // #1692 п.10
 
 module.exports = function (getDB) {
   const router = Router()
@@ -21,7 +22,7 @@ module.exports = function (getDB) {
     try {
       const db = getDB()
       const data = await db.collection('goals').find({}).toArray()
-      res.json(data)
+      res.json(await withDerivedChallengeValues(db, data))
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
