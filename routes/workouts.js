@@ -1,5 +1,6 @@
 const { Router } = require('express')
 const { calc1RM, pickBestSet } = require('../lib/workout-sets')
+const { attachWhoop } = require('../lib/whoop-link') // #1692 п.4
 const { evaluateProgression } = require('../lib/exercise-progression')
 const { buildExerciseTrends } = require('../lib/exercise-trends')
 const { formatDateKyiv } = require('../lib/training-program')
@@ -83,7 +84,7 @@ module.exports = function (getDB) {
         .skip(Number(skip))
         .limit(Number(limit))
         .toArray()
-      res.json(data)
+      res.json(await attachWhoop(db, data))
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -99,7 +100,7 @@ module.exports = function (getDB) {
         .sort({ date: -1 })
         .limit(Number(limit))
         .toArray()
-      res.json(data)
+      res.json(await attachWhoop(db, data))
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
