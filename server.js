@@ -9,6 +9,7 @@ const { checkCycleEndsAndNotify } = require('./lib/cycle-notify')
 // (REQ-10) — reuse the SAME 60-min interval tick below, not a second one.
 const { checkLowStockAndNotify } = require('./lib/stock-notify')
 const { sendWeeklyLabsDigest } = require('./lib/labs-digest')
+const { refreshDueProductOffers } = require('./lib/product-offer-cache')
 
 const app = express()
 const PORT = process.env.HEALTH_API_TEST_PORT || 3001
@@ -405,10 +406,12 @@ if (require.main === module) {
         checkCycleEndsAndNotify(getDB()).catch(err => console.error('[cycle-notify] initial run failed:', err.message))
         checkLowStockAndNotify(getDB()).catch(err => console.error('[stock-notify] initial run failed:', err.message))
         sendWeeklyLabsDigest(getDB()).catch(err => console.error('[labs-digest] initial run failed:', err.message))
+        refreshDueProductOffers(getDB()).catch(err => console.error('[product-offers] initial refresh failed:', err.message))
         setInterval(() => {
           checkCycleEndsAndNotify(getDB()).catch(err => console.error('[cycle-notify] interval run failed:', err.message))
           checkLowStockAndNotify(getDB()).catch(err => console.error('[stock-notify] interval run failed:', err.message))
           sendWeeklyLabsDigest(getDB()).catch(err => console.error('[labs-digest] interval run failed:', err.message))
+          refreshDueProductOffers(getDB()).catch(err => console.error('[product-offers] interval refresh failed:', err.message))
         }, 60 * 60 * 1000)
       }, 30 * 1000)
     })
