@@ -755,7 +755,12 @@ function buildDailyMetricsUpdate(dateStr, now, sources, { unsetSleepFields = fal
   return update
 }
 
-async function syncDate(db, token, dateStr) {
+// Only a fully processed, cycle-anchored no-match can prove old sleep fields stale.
+function shouldUnsetSleep({ cycleId, sleepFetchCompleted, sleepResult }) {
+  return Boolean(cycleId && sleepFetchCompleted && !sleepResult)
+}
+
+async function syncDate(db, token, dateStr, { fetchWhoop = whoopGet } = {}) {
   const { start, end } = dateRange(dateStr)
   const now = new Date().toISOString()
 
@@ -768,7 +773,7 @@ async function syncDate(db, token, dateStr) {
 
   // ── Cycles ──
   try {
-    const cyclesResp = await whoopGet(token,
+    const cyclesResp = await fetchWhoop(token,
       `/cycle?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`)
     const rawCycles = cyclesResp?.records || []
     // #1322: upsert key is {cycle_id}, date is Rule B on c.start — see
@@ -797,7 +802,7 @@ async function syncDate(db, token, dateStr) {
 
   // ── Recovery (v2) ──
   try {
-    const recResp = await whoopGet(token,
+    const recResp = await fetchWhoop(token,
       `/recovery?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`, true)
     const recs = recResp?.records || []
     const r = pickRecoveryByCycle(recs, cycleId) // #825: match /cycle's settled cycle_id, not positional recs[0]
@@ -833,12 +838,11 @@ async function syncDate(db, token, dateStr) {
 
   // ── Sleep (v2) ──
   try {
-    const sleepResp = await whoopGet(token,
+    const sleepResp = await fetchWhoop(token,
       `/activity/sleep?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`, true)
     // #825: narrow to the cycle /cycle settled on for this dateStr BEFORE the
     // pickLongerSleep tie-break below — see filterSleepsByCycle doc comment.
     const sleeps = filterSleepsByCycle((sleepResp?.records || []).filter(s => !s.nap), cycleId)
-    sleepFetchCompleted = true
     for (const s of sleeps) {
       const stages = s.score?.stage_summary ?? {}
       const totalInBedMs = stages.total_in_bed_time_milli ?? null
@@ -895,13 +899,15 @@ async function syncDate(db, token, dateStr) {
       // by its own sleep_id; only the daily_metrics feeder (sleepResult) picks one.
       sleepResult = pickLongerSleep(sleepResult, doc)
     }
+    // A failed write must not turn existing daily_metrics sleep data into a no-match.
+    sleepFetchCompleted = true
   } catch (e) {
     log(`  [sleep] ${dateStr} error: ${e.message}`)
   }
 
   // ── Workouts (v2) ──
   try {
-    const wResp = await whoopGet(token,
+    const wResp = await fetchWhoop(token,
       `/activity/workout?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`, true)
     const wkts = wResp?.records || []
     for (const w of wkts) {
@@ -948,7 +954,7 @@ async function syncDate(db, token, dateStr) {
 
   // ── Upsert daily_metrics (denormalized view for /api/metrics) ──
   try {
-    const shouldUnsetSleepFields = Boolean(cycleId && sleepFetchCompleted && !sleepResult)
+    const shouldUnsetSleepFields = shouldUnsetSleep({ cycleId, sleepFetchCompleted, sleepResult })
     const dailyMetricsUpdate = buildDailyMetricsUpdate(
       dateStr,
       now,
@@ -1057,7 +1063,7 @@ module.exports = { refreshToken, getToken, alertReauthIfDue, markSyncSuccess, Re
   pickRecoveryByCycle, filterSleepsByCycle,
   filterCyclesByPrevDay, prevCalendarDateStr,
   kyivDayPlus12, buildCycleDoc, resolveCycleWrites,
-  preflightProbe }
+  preflightProbe, syncDate, shouldUnsetSleep }
 
 // Run only when invoked directly, not when required by a test.
 if (require.main === module) {
