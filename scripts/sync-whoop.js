@@ -712,6 +712,20 @@ function buildSleepMetricFields(sleepResult) {
   return fields
 }
 
+const DAILY_METRICS_SLEEP_FIELDS = [
+  'sleep_hours',
+  'sleep_light_hours',
+  'sleep_deep_hours',
+  'sleep_rem_hours',
+  'sleep_disturbance_count',
+  'sleep_cycle_count',
+  'sleep_performance',
+  'sleep_needed_hours',
+  'sleep_consistency',
+  'sleep_efficiency',
+  'respiratory_rate',
+]
+
 function buildMetricsDoc(dateStr, now, { cycleResult, recoveryResult, sleepResult }) {
   const metricsDoc = { date: dateStr, synced_at: now }
   if (cycleResult) {
@@ -731,6 +745,16 @@ function buildMetricsDoc(dateStr, now, { cycleResult, recoveryResult, sleepResul
   return metricsDoc
 }
 
+function buildDailyMetricsUpdate(dateStr, now, sources, { unsetSleepFields = false } = {}) {
+  const update = {
+    $set: buildMetricsDoc(dateStr, now, sources),
+  }
+  if (unsetSleepFields) {
+    update.$unset = Object.fromEntries(DAILY_METRICS_SLEEP_FIELDS.map(field => [field, '']))
+  }
+  return update
+}
+
 async function syncDate(db, token, dateStr) {
   const { start, end } = dateRange(dateStr)
   const now = new Date().toISOString()
@@ -739,6 +763,7 @@ async function syncDate(db, token, dateStr) {
   let cycleId = null
   let recoveryResult = null
   let sleepResult = null
+  let sleepFetchCompleted = false
   let workoutCount = 0
 
   // ── Cycles ──
@@ -813,6 +838,7 @@ async function syncDate(db, token, dateStr) {
     // #825: narrow to the cycle /cycle settled on for this dateStr BEFORE the
     // pickLongerSleep tie-break below — see filterSleepsByCycle doc comment.
     const sleeps = filterSleepsByCycle((sleepResp?.records || []).filter(s => !s.nap), cycleId)
+    sleepFetchCompleted = true
     for (const s of sleeps) {
       const stages = s.score?.stage_summary ?? {}
       const totalInBedMs = stages.total_in_bed_time_milli ?? null
@@ -922,10 +948,16 @@ async function syncDate(db, token, dateStr) {
 
   // ── Upsert daily_metrics (denormalized view for /api/metrics) ──
   try {
-    const metricsDoc = buildMetricsDoc(dateStr, now, { cycleResult, recoveryResult, sleepResult })
+    const shouldUnsetSleepFields = Boolean(cycleId && sleepFetchCompleted && !sleepResult)
+    const dailyMetricsUpdate = buildDailyMetricsUpdate(
+      dateStr,
+      now,
+      { cycleResult, recoveryResult, sleepResult },
+      { unsetSleepFields: shouldUnsetSleepFields }
+    )
     await db.collection('daily_metrics').updateOne(
       { date: dateStr },
-      { $set: metricsDoc },
+      dailyMetricsUpdate,
       { upsert: true }
     )
   } catch (e) {
@@ -1021,7 +1053,7 @@ async function main() {
 // Export the token layer for unit tests (see src/tests/whoop-token.test.ts).
 module.exports = { refreshToken, getToken, alertReauthIfDue, markSyncSuccess, ReauthRequiredError, TransientRefreshError,
   REFRESH_THRESHOLD_MS, MIN_REFRESH_INTERVAL_MS, REAUTH_DEDUP_HOURS, RETRY_5XX_PAUSE_MS,
-  DEFAULT_UA, buildRequestHeaders, captureSetCookie, cookieHeaderFor, resetCookieJar, buildMetricsDoc, buildSleepMetricFields, pickLongerSleep,
+  DEFAULT_UA, buildRequestHeaders, captureSetCookie, cookieHeaderFor, resetCookieJar, buildMetricsDoc, buildDailyMetricsUpdate, buildSleepMetricFields, DAILY_METRICS_SLEEP_FIELDS, pickLongerSleep,
   pickRecoveryByCycle, filterSleepsByCycle,
   filterCyclesByPrevDay, prevCalendarDateStr,
   kyivDayPlus12, buildCycleDoc, resolveCycleWrites,

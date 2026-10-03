@@ -609,6 +609,51 @@ describe('sync-whoop — #825 sleep selection: cycle_id filter before pickLonger
   })
 })
 
+describe('sync-whoop — #1139 daily_metrics clears stale sleep fields when cycle sleep is missing', () => {
+  const { buildDailyMetricsUpdate, DAILY_METRICS_SLEEP_FIELDS } = require('../../scripts/sync-whoop')
+
+  it('GREEN: builds a $unset for every daily_metrics sleep field on a cycle-anchored no-match', () => {
+    const update = buildDailyMetricsUpdate(
+      '2026-07-06',
+      '2026-10-03T16:45:00.000Z',
+      {
+        cycleResult: { strain: 8.1, calories_burned: 2300, avg_heart_rate: null, max_heart_rate: null },
+        recoveryResult: null,
+        sleepResult: null,
+      },
+      { unsetSleepFields: true }
+    )
+
+    expect(update.$set).toEqual({
+      date: '2026-07-06',
+      synced_at: '2026-10-03T16:45:00.000Z',
+      strain: 8.1,
+      calories_burned: 2300,
+    })
+    expect(update.$unset).toEqual(Object.fromEntries(
+      DAILY_METRICS_SLEEP_FIELDS.map((field: string) => [field, ''])
+    ))
+    expect(Object.keys(update.$unset).sort()).toEqual([...DAILY_METRICS_SLEEP_FIELDS].sort())
+  })
+
+  it('does not unset sleep fields for ordinary updates unless the caller proves a sleep no-match', () => {
+    const update = buildDailyMetricsUpdate(
+      '2026-07-06',
+      '2026-10-03T16:45:00.000Z',
+      {
+        cycleResult: null,
+        recoveryResult: null,
+        sleepResult: { sleep_hours: 7.2, total_light_sleep_ms: null, total_sws_ms: null, total_rem_ms: null,
+          disturbance_count: null, sleep_cycle_count: null, sleep_performance: null, sleep_needed_hours: null,
+          sleep_consistency: null, sleep_efficiency: null, respiratory_rate: null },
+      }
+    )
+
+    expect(update).not.toHaveProperty('$unset')
+    expect(update.$set.sleep_hours).toBe(7.2)
+  })
+})
+
 describe('sync-whoop — #1324 cycle dedup: reject a candidate already assigned to the PREVIOUS day', () => {
   const { filterCyclesByPrevDay, prevCalendarDateStr } = require('../../scripts/sync-whoop')
 
