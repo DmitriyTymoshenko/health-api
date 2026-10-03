@@ -155,6 +155,38 @@ describe('GET /api/catalog/recommendations — C3 cache behaviour', () => {
     expect((global.fetch as jest.Mock).mock.calls.length).toBe(1)
   })
 
+  it('legacy cached recommendations without provenance are grounded on read without regenerating', async () => {
+    global.fetch = jest.fn(async () => {
+      throw new Error('Gemini must not be called for cached recommendations')
+    }) as unknown as typeof fetch
+    const db = makeDB({
+      recs: [{
+        date: '2026-09-22',
+        payload: {
+          date: '2026-09-22',
+          generated_at: '2026-09-22T10:00:00.000Z',
+          model: 'test',
+          refresh_count: 0,
+          recommendations: [{
+            key: 'mg',
+            name: 'Magnesium Glycinate',
+            source: 'whoop',
+            verdict: { kind: 'neutral', by: 'external', ref: 'https://examine.com/magnesium' },
+            suggested: { knowledge: { continuous_source: { kind: 'neutral', by: 'external', ref: 'https://examine.com/magnesium' } } },
+          }],
+          warnings: [],
+          errors: [],
+        },
+      }],
+    })
+    const res = await request(buildApp(db)).get('/api/catalog/recommendations')
+    expect(res.status).toBe(200)
+    expect((global.fetch as jest.Mock).mock.calls).toHaveLength(0)
+    expect(res.body.recommendations[0].verdict).toEqual({ kind: 'not_covered', by: 'external' })
+    expect(res.body.recommendations[0].provenance.state).toBe('unverified')
+    expect(res.body.recommendations[0].suggested.knowledge.continuous_source).toEqual({ kind: 'not_covered', by: 'external' })
+  })
+
   it('a Gemini failure returns 200 with recommendations:[] + errors, and does NOT cache the doc', async () => {
     global.fetch = jest.fn(async () => ({ ok: false, status: 500, text: async () => 'server error' })) as unknown as typeof fetch
     const db = makeDB({ catalog: ACTIVE_STACK, knowledge: KNOWLEDGE, labs: [] })

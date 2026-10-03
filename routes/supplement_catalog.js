@@ -9,6 +9,7 @@ const { callGemini, GEMINI_MODEL } = require('../lib/gemini-text')
 const { fetchLatestLabs } = require('../lib/labs-latest')
 const { RECS_RESPONSE_SCHEMA, buildRecsPrompt, toRawCandidate } = require('../lib/recs-generate')
 const { postprocessRecommendations } = require('../lib/recs-postprocess')
+const { validateVerdictWithProvenance } = require('../lib/koliada-validate')
 const { retrieveKoliadaSnippets, formatSnippets, termsFromStackAndLabs } = require('../lib/koliada-retrieve')
 
 // #1488 (stage C of #1485): manual refresh cap for GET /catalog/recommendations
@@ -443,13 +444,31 @@ module.exports = function (getDB) {
     return payload
   }
 
+  function withCachedRecommendationProvenance(payload) {
+    if (!payload || !Array.isArray(payload.recommendations)) return payload
+    if (payload.recommendations.every(r => r?.provenance)) return payload
+
+    const { text: corpusText } = loadCorpus()
+    return {
+      ...payload,
+      recommendations: payload.recommendations.map(rec => {
+        if (!rec || rec.provenance) return rec
+        const { verdict, provenance } = validateVerdictWithProvenance(rec.verdict, corpusText)
+        const suggested = rec.suggested
+          ? { ...rec.suggested, knowledge: { ...rec.suggested.knowledge, continuous_source: verdict } }
+          : rec.suggested
+        return { ...rec, verdict, provenance, suggested }
+      }),
+    }
+  }
+
   // GET /api/catalog/recommendations — generates once per Kyiv day, cached.
   router.get('/recommendations', async (req, res) => {
     try {
       const db = getDB()
       const todayStr = formatDateKyiv(new Date())
       const cached = await db.collection('supplement_recommendations').findOne({ date: todayStr })
-      if (cached) return res.json(cached.payload)
+      if (cached) return res.json(withCachedRecommendationProvenance(cached.payload))
 
       const result = await generateRecommendationsPayload(db)
       const payload = await saveRecommendationsCache(db, todayStr, result, 0)
