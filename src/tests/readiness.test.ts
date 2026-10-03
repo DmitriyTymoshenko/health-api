@@ -198,6 +198,9 @@ describe('buildReadiness — truth table (zone x streak x trend)', () => {
     })
     expect(r.level).toBe('base_only')
     expect(r.yellow_red_streak_days).toBe(1)
+    // #1692 п.7: dedicated base_only text, not the "hold" text
+    expect(r.reason_text).toContain('тільки база')
+    expect(r.reason_text).not.toContain('тримай обсяг')
   })
 
   it('no recovery today -> data_fresh:false, level:null, NEVER a defaulted (?? 65) verdict', () => {
