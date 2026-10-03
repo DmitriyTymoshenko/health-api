@@ -23,3 +23,4 @@ describe('#1692 п.10 challenge current_value from recorded sets', () => {
     expect(out[2].current_value).toBe(103)
   })
 })
+export {}

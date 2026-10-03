@@ -174,3 +174,18 @@ describe('backfillWeightUnitInSession — #1318 KROK 2: postfactum backfill, "Д
 })
 
 export {}
+
+describe('#1692 п.11 additive merge', () => {
+  it('identical re-POST is a no-op; longer dictation appends only new sets', () => {
+    const existing = [{ name: 'Жим', sets: [{ reps: 8, weight_input: 80, weight_kg: 80 }, { reps: 8, weight_input: 80, weight_kg: 80 }] }]
+    const same = mergeExercisesIntoDoc(existing, [{ name: 'Жим', sets: existing[0].sets }])
+    expect(same[0].sets).toHaveLength(2)
+    const more = mergeExercisesIntoDoc(existing, [{ name: 'Жим', sets: [{ reps: 8, weight_input: 80, weight_kg: 80 }, { reps: 8, weight_input: 80, weight_kg: 80 }, { reps: 6, weight_input: 80, weight_kg: 80 }] }])
+    expect(more[0].sets).toHaveLength(3)
+  })
+  it('a shorter re-POST does not drop earlier sets (17.09 regression)', () => {
+    const existing = [{ name: 'Жим', sets: [{ reps: 8, weight_input: 80, weight_kg: 80 }, { reps: 6, weight_input: 80, weight_kg: 80 }] }]
+    const out = mergeExercisesIntoDoc(existing, [{ name: 'Жим', sets: [{ reps: 6, weight_input: 80, weight_kg: 80 }] }])
+    expect(out[0].sets).toHaveLength(2)
+  })
+})
