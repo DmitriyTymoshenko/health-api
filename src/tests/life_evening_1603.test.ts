@@ -90,3 +90,30 @@ describe('evening route', () => {
     expect(res.body.rating_present).toBe(true)
   })
 })
+
+// Contract mutation checks: the common schema must reject API drift, not merely exist.
+describe('evening response contract guards #1962', () => {
+  it('validates the unrated GET shape and rejects invalid axes or missing fields', async () => {
+    const { app } = makeApp()
+    const res = await request(app).get('/api/life/day-rating?day=' + DAY)
+    expect(res.status).toBe(200)
+    assertMatchesContract('DayRatingResponse', res.body)
+    for (const energy of [0, 6, 2.5, '4']) {
+      expect(() => assertMatchesContract('DayRatingResponse', { ...res.body, energy })).toThrow(/Contract violation/)
+    }
+    const { focus, ...missingFocus } = res.body
+    expect(() => assertMatchesContract('DayRatingResponse', missingFocus)).toThrow(/Contract violation/)
+    expect(() => assertMatchesContract('DayRatingResponse', { ...res.body, fabricated: true })).toThrow(/Contract violation/)
+  })
+
+  it('rejects missing evening arrays and malformed nested client-facing records', () => {
+    const base = { day: DAY, open_rules: [], open_goals: [], dont_miss_twice: [], rating_present: false }
+    assertMatchesContract('EveningResponse', base)
+    const { open_rules, ...missingRules } = base
+    expect(() => assertMatchesContract('EveningResponse', missingRules)).toThrow(/Contract violation/)
+    for (const key of ['open_rules', 'open_goals', 'dont_miss_twice']) {
+      expect(() => assertMatchesContract('EveningResponse', { ...base, [key]: [{}] })).toThrow(/Contract violation/)
+    }
+    expect(() => assertMatchesContract('EveningResponse', { ...base, rating_present: 'false' })).toThrow(/Contract violation/)
+  })
+})
