@@ -5,10 +5,10 @@
 const { validateVerdict, isAllowlistedUrl } = require('../../lib/koliada-validate')
 
 const CORPUS = `## Vitamin D
-In Lesson 12, Koliada explains that vitamin D absorption improves with fat-soluble co-ingestion, and recommends a continuous daily dose rather than a cycled one for most adults.
+## Lesson 12\nKoliada explains that vitamin D absorption improves with fat-soluble co-ingestion, and recommends a continuous daily dose rather than a cycled one for most adults.
 
 ## Creatine
-Per урок 27, creatine monohydrate has no established need for cycling — continuous daily dosing is both safe and standard per current evidence.`
+## урок 27\n creatine monohydrate has no established need for cycling — continuous daily dosing is both safe and standard per current evidence.`
 
 describe('validateVerdict — (a) real quote + lesson ref stays koliada-grounded', () => {
   it('a genuine substring of the corpus with a valid "Lesson N" ref keeps kind/by/ref/quote', () => {
@@ -31,14 +31,14 @@ describe('validateVerdict — (a) real quote + lesson ref stays koliada-grounded
     expect(validateVerdict(verdict, CORPUS)).toEqual(verdict)
   })
 
-  it('also accepts a plural lesson-range ref from the vault file header', () => {
+  it('rejects a range when source metadata only identifies individual lessons', () => {
     const verdict = {
       kind: 'neutral',
       by: 'koliada',
       ref: 'lessons 1–38',
       quote: 'creatine monohydrate has no established need for cycling',
     }
-    expect(validateVerdict(verdict, CORPUS)).toEqual(verdict)
+    expect(validateVerdict(verdict, CORPUS)).toEqual({ kind: 'not_covered', by: 'external' })
   })
 
   it('normalizes whitespace before matching (multi-line/extra-space quote still matches)', () => {
@@ -60,7 +60,7 @@ describe('validateVerdict — (a) real quote + lesson ref stays koliada-grounded
       ref: 'Lesson 12',
       quote: 'Vitamin D absorption improves with “fat soluble” co ingestion',
     }
-    const corpus = 'lesson 12 says: vitamin d absorption improves with fat-soluble co-ingestion.'
+    const corpus = '## Lesson 12\n vitamin d absorption improves with fat-soluble co-ingestion.'
     expect(validateVerdict(verdict, corpus)).toEqual({
       kind: 'confirms',
       by: 'koliada',
@@ -108,14 +108,14 @@ describe('validateVerdict — (c) external ref outside the allowlist downgrades 
     expect(validateVerdict(verdict, CORPUS)).toEqual({ kind: 'not_covered', by: 'external' })
   })
 
-  it('an allowlisted domain (examine.com) is accepted, ref preserved', () => {
+  it('an allowlisted domain without evidence is unverified', () => {
     const verdict = { kind: 'confirms', by: 'external', ref: 'https://examine.com/supplements/vitamin-d/' }
-    expect(validateVerdict(verdict, CORPUS)).toEqual({ kind: 'confirms', by: 'external', ref: 'https://examine.com/supplements/vitamin-d/' })
+    expect(validateVerdict(verdict, CORPUS)).toEqual({ kind: 'not_covered', by: 'external' })
   })
 
-  it('a subdomain of an allowlisted domain is accepted (pubmed.ncbi.nlm.nih.gov)', () => {
+  it('PubMed URL without evidence is unverified', () => {
     const verdict = { kind: 'neutral', by: 'external', ref: 'https://pubmed.ncbi.nlm.nih.gov/12345678/' }
-    expect(validateVerdict(verdict, CORPUS).kind).toBe('neutral')
+    expect(validateVerdict(verdict, CORPUS).kind).toBe('not_covered')
   })
 
   it('not a valid URL at all → rejected without throwing', () => {

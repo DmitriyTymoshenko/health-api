@@ -4,8 +4,8 @@
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { normalizeForMatch, findStackMatch, postprocessOne, postprocessRecommendations, computeDeterministicStaleLabs } = require('../../lib/recs-postprocess')
 
-const CORPUS = `In Lesson 12, Koliada explains that vitamin D absorption improves with fat-soluble co-ingestion.
-Per урок 27, creatine monohydrate has no established need for cycling.`
+const CORPUS = `## Lesson 12\nKoliada explains that vitamin D absorption improves with fat-soluble co-ingestion.
+## урок 27\n creatine monohydrate has no established need for cycling.`
 
 const ACTIVE_STACK = [
   { id: 1, short_name: 'Creatine HCl', name: 'Amix Creatine HCl' },
