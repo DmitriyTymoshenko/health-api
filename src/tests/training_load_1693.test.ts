@@ -153,7 +153,7 @@ describe('pr-feed + adherence lib', () => {
   const { buildProgramAdherence } = require('../../lib/training-load')
   it('emits a PR only when a session beats the earlier best; first session is baseline', () => {
     const w = (date: string, weight: number, reps: number) => ({ date, exercises: [{ name: 'Жим лежачи', sets: [{ weight_kg: weight, reps }] }] })
-    const feed = buildPrFeed([w('2026-09-01', 60, 8), w('2026-09-08', 60, 8), w('2026-09-15', 65, 8), w('2026-09-22', 62, 8)], { from: '2026-08-01' })
+    const feed = buildPrFeed([w('2026-09-01', 60, 8), w('2026-09-08', 60, 8), w('2026-09-15', 65, 8), w('2026-09-22', 62, 8)], { from: '2026-08-01', library: [{ name: 'Жим лежачи', equipment: 'barbell' }] })
     expect(feed).toHaveLength(1)
     expect(feed[0]).toMatchObject({ date: '2026-09-15', exercise: 'Жим лежачи', kind: 'e1rm', weight_kg: 65 })
     expect(feed[0].previous).toBeLessThan(feed[0].value)

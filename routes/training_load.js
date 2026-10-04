@@ -4,6 +4,7 @@ const { Router } = require('express')
 const { formatDateKyiv } = require('../lib/training-program')
 const { MUSCLE_GROUPS } = require('../lib/exercise-dictionaries')
 const { exerciseNamesFromWorkouts } = require('../lib/volume-by-muscle')
+const { deriveWorkoutMetrics } = require('../lib/workout-metrics')
 const { buildPrFeed } = require('../lib/pr-feed')
 const { buildWorkingWeights } = require('../lib/working-weights')
 const { buildWeeklySets, buildLoadRecovery, buildProgramAdherence, addDays } = require('../lib/training-load')
@@ -30,8 +31,9 @@ module.exports = function (getDB) {
         db.collection('whoop_recovery').find({ date: { $gte: from28, $lte: today } }).toArray(),
       ])
 
-      const workouts90 = allWorkouts.filter((w) => w.date >= from90)
-      const names = exerciseNamesFromWorkouts(workouts90)
+      const metricWorkouts = await deriveWorkoutMetrics(db, allWorkouts)
+      const workouts90 = metricWorkouts.filter((w) => w.date >= from90)
+      const names = exerciseNamesFromWorkouts(metricWorkouts)
       const library = names.length
         ? await db.collection('exercises_library').find({ name: { $in: names } }).toArray()
         : []
@@ -44,9 +46,9 @@ module.exports = function (getDB) {
       res.json({
         date: today,
         ...weekly,
-        prs: buildPrFeed(allWorkouts, { from: from90 }),
+        prs: buildPrFeed(metricWorkouts, { from: from90, library }),
         // #1727 п.2: working weight per session over the last 90d
-        working_weights: buildWorkingWeights(allWorkouts, { from: from90 }),
+        working_weights: buildWorkingWeights(metricWorkouts, { from: from90, library }),
         program_adherence: buildProgramAdherence({ program, workouts90, whoopWorkouts90, today, weekFrom: weekly.week.from, weekTo: weekly.week.to }),
         load_recovery: buildLoadRecovery({ today, whoopWorkouts90, recovery28, workouts90 }),
       })
