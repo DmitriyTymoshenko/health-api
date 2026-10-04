@@ -74,6 +74,6 @@ test('budget skips complete multisource item without advancing TTL; next run fai
  await refreshDueProductOffers(db,{...opts,now:new Date(now.getTime()+60000)})
  assert.equal(calls,15);assert.equal(db.docs.find(d=>d.catalog_id===1).last_attempt_at,first)
  assert.ok(db.docs.find(d=>d.catalog_id===12).last_attempt_at)
- await refreshDueProductOffers(db,opts);assert.equal(calls,15)
+ await refreshDueProductOffers(db,{...opts,now:new Date(now.getTime()+120000)});assert.equal(calls,15)
  const view=await getProductOffers(db,now);assert.equal(view.items.length,13);assert.ok(!view.items.some(d=>d.catalog_id===14));assert.equal(items.length,14)
 })
