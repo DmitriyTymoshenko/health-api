@@ -580,6 +580,32 @@ describe('GET /api/life/today', () => {
 export {}
 
 describe('PUT /api/life/habits/:id — type change (#1712)', () => {
+  it('restores an archived habit via active:true and it appears in GET active=true (#1713)', async () => {
+    const habitId = new ObjectId()
+    const archivedAt = new Date('2026-10-01T09:00:00.000Z')
+    const { app } = makeApp({
+      habits: [{
+        _id: habitId,
+        type: 'build',
+        name: 'Пити воду',
+        implementation: 'x',
+        active: false,
+        archived_at: archivedAt,
+      }],
+    })
+
+    const before = await request(app).get('/api/life/habits').query({ active: 'false' })
+    expect(before.body.map((h: any) => h.name)).toContain('Пити воду')
+
+    const put = await request(app).put(`/api/life/habits/${habitId}`).send({ active: true })
+    expect(put.status).toBe(200)
+    expect(put.body.active).toBe(true)
+    expect(put.body.archived_at).toBeNull()
+
+    const active = await request(app).get('/api/life/habits').query({ active: 'true' })
+    expect(active.body.map((h: any) => h.name)).toContain('Пити воду')
+  })
+
   it('persists a build -> break type change and GET returns it', async () => {
     const habitId = new ObjectId()
     const { app } = makeApp({

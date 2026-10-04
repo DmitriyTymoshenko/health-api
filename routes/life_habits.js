@@ -221,6 +221,13 @@ module.exports = function (getDB, sources) {
       for (const f of HABIT_EDITABLE_FIELDS) {
         if (req.body[f] !== undefined) set[f] = req.body[f]
       }
+      if (req.body.active !== undefined) {
+        if (typeof req.body.active !== 'boolean') {
+          return res.status(400).json({ error: 'active must be boolean' })
+        }
+        set.active = req.body.active
+        set.archived_at = req.body.active ? null : new Date()
+      }
       // #1602: validated editable fields. `tracker: null` detaches the tracker.
       if (req.body.frequency !== undefined) {
         const v = trackers.validateFrequency(req.body.frequency)
