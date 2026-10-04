@@ -1,3 +1,4 @@
+const { readSupplementSafetyContext } = require('../lib/supplement-safety-context')
 const { Router } = require('express')
 const { getProductOffers, refreshDueProductOffers } = require('../lib/product-offer-cache')
 const { validateSupplementKnowledgeCycle, validateKnowledgeCycleInvariant } = require('../lib/validate')
@@ -463,38 +464,43 @@ module.exports = function (getDB) {
   }
 
   // GET /api/catalog/recommendations — generates once per Kyiv day, cached.
-  router.get('/recommendations', async (req, res) => {
+  async function recommendationSafety(req, res, next) {
+    res.locals.personalSafety = await readSupplementSafetyContext(getDB)
+    next()
+  }
+
+  router.get('/recommendations', recommendationSafety, async (req, res) => {
     try {
       const db = getDB()
       const todayStr = formatDateKyiv(new Date())
       const cached = await db.collection('supplement_recommendations').findOne({ date: todayStr })
-      if (cached) return res.json(withCachedRecommendationProvenance(cached.payload))
+      if (cached) return res.json({ ...withCachedRecommendationProvenance(cached.payload), personal_safety: res.locals.personalSafety })
 
       const result = await generateRecommendationsPayload(db)
       const payload = await saveRecommendationsCache(db, todayStr, result, 0)
-      res.json(payload)
+      res.json({ ...payload, personal_safety: res.locals.personalSafety })
     } catch (err) {
-      res.status(500).json({ error: err.message })
+      res.status(500).json({ error: err.message, personal_safety: res.locals.personalSafety })
     }
   })
 
   // POST /api/catalog/recommendations/refresh — manual regenerate, capped
   // per Kyiv day. The FIRST generation (via the GET above, refresh_count:0)
   // does not consume this budget — only explicit refresh calls do.
-  router.post('/recommendations/refresh', async (req, res) => {
+  router.post('/recommendations/refresh', recommendationSafety, async (req, res) => {
     try {
       const db = getDB()
       const todayStr = formatDateKyiv(new Date())
       const existing = await db.collection('supplement_recommendations').findOne({ date: todayStr })
       const currentCount = existing?.refresh_count || 0
       if (currentCount >= RECS_REFRESH_CAP) {
-        return res.status(429).json({ error: `Refresh limit reached for today (${RECS_REFRESH_CAP})` })
+        return res.status(429).json({ error: `Refresh limit reached for today (${RECS_REFRESH_CAP})`, personal_safety: res.locals.personalSafety })
       }
       const result = await generateRecommendationsPayload(db)
       const payload = await saveRecommendationsCache(db, todayStr, result, currentCount + 1)
-      res.json(payload)
+      res.json({ ...payload, personal_safety: res.locals.personalSafety })
     } catch (err) {
-      res.status(500).json({ error: err.message })
+      res.status(500).json({ error: err.message, personal_safety: res.locals.personalSafety })
     }
   })
 
