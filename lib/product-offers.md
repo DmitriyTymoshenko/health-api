@@ -45,7 +45,7 @@ link means the structured offer was parsed from that page; it is not a merchant 
 
 ## Validation
 
-API: `node --test lib/product-offers.test.js lib/product-offer-cache.test.js lib/product-offer-routes.test.js`
+API: `npm test -- --runInBand product-offer` (included in standard Jest and deployment gates; #1991)
 UI: `npm test -- src/tests/Supplements --maxWorkers=1`; `npm run build`.
 Browser: `node src/tests/SupplementsOffers.e2e.mjs` in health-dashboard, CHROME_BIN optional.
 The browser smoke starts only a loopback server and intercepts all API traffic with fixtures;

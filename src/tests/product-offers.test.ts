@@ -1,7 +1,10 @@
-const {test}=require('node:test')
+// @ts-nocheck
+// Real production helpers, collected by the standard Jest/deploy gate (#1991).
+export {}
+
 const assert=require('node:assert/strict')
 const {EventEmitter}=require('node:events')
-const {safeUrl,publicIPv4,fetchPublicHtml,parseOffers,SOURCES,present,TTL_MS,sourcesFor}=require('./product-offers')
+const {safeUrl,publicIPv4,fetchPublicHtml,parseOffers,SOURCES,present,TTL_MS,sourcesFor}=require('../../lib/product-offers')
 const source=SOURCES['gymbeam omega 3']
 const html=p=>`<script type="application/ld+json">${JSON.stringify({'@graph':[p]})}</script>`
 const product=offers=>({'@type':'Product',name:source.product_name,offers})

@@ -1,6 +1,9 @@
-const {test}=require('node:test');const assert=require('node:assert/strict')
-const {getProductOffers,refreshDueProductOffers}=require('./product-offer-cache')
-const {TTL_MS}=require('./product-offers')
+// @ts-nocheck
+// Real production helpers, collected by the standard Jest/deploy gate (#1991).
+export {}
+;const assert=require('node:assert/strict')
+const {getProductOffers,refreshDueProductOffers}=require('../../lib/product-offer-cache')
+const {TTL_MS}=require('../../lib/product-offers')
 function mockDB(){
  const docs=[]
  const coll={find:()=>({toArray:async()=>docs.map(d=>({...d}))}),updateOne:async(q,u)=>{let d=docs.find(x=>x._id===q._id);if(!d){d={_id:q._id,...u.$setOnInsert};docs.push(d)};Object.assign(d,u.$set);for(const k in u.$unset)delete d[k]},findOneAndUpdate:async(q,u)=>{let d=docs.find(x=>x._id===q._id);if(d.lease_until&&d.lease_until>q.$or[1].lease_until.$lte)return null;Object.assign(d,u.$set);return {...d}}}

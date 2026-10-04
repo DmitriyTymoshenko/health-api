@@ -1,6 +1,9 @@
-const {test}=require('node:test');const assert=require('node:assert/strict')
+// @ts-nocheck
+// Real production helpers, collected by the standard Jest/deploy gate (#1991).
+export {}
+;const assert=require('node:assert/strict')
 const express=require('express');const request=require('supertest')
-const route=require('../routes/supplement_catalog')
+const route=require('../../routes/supplement_catalog')
 test('GET offers uses persisted cache only without initiating LLM or merchant fetches',async()=>{
  const reads=[]
  const db={collection:n=>{reads.push(n);return {find:()=>({toArray:async()=>n==='supplement_catalog'?[{id:1,name:'Generic',active:true}]:[]})}}}
