@@ -39,7 +39,7 @@ test('generic brands are labelled candidates, never written into regimen or sile
  }
 })
 test('price is read from latest merchant Offer, never from mapping or saved fixture constant',()=>{
- const f=clone('ash');f.products[0].offers[0].price='701.25';assert.equal(parseOffers(html(f),SOURCES[keys.ash])[0].price,701.25)
+ const f=clone('zma');f.products[0].offers[0].price='17.25';assert.equal(parseOffers(html(f),SOURCES[keys.zma])[0].price,17.25)
 })
 test('new mappings preserve exact product identity and reject unsafe merchant variant URLs',()=>{
  for(const k of ['ash','iso','zma','eaa']){
@@ -76,4 +76,11 @@ test('budget skips complete multisource item without advancing TTL; next run fai
  assert.ok(db.docs.find(d=>d.catalog_id===12).last_attempt_at)
  await refreshDueProductOffers(db,{...opts,now:new Date(now.getTime()+120000)});assert.equal(calls,15)
  const view=await getProductOffers(db,now);assert.equal(view.items.length,13);assert.ok(!view.items.some(d=>d.catalog_id===14));assert.equal(items.length,14)
+})
+
+test('Woo shared Offer rejects differing flavour prices and inconsistent shared JSON-LD price',()=>{
+ for(const k of ['ash','iso']) {
+  let f=clone(k);f.products[0].offers[0].price='999.99';assert.deepEqual(parseOffers(html(f),SOURCES[keys[k]]),[])
+  f=clone(k);f.extra=f.extra.replace(/(display_price&quot;:\s*)([0-9.]+)/,(_,prefix,n)=>prefix+(Number(n)+(k==='iso'?0.01:1)));assert.deepEqual(parseOffers(html(f),SOURCES[keys[k]]),[])
+ }
 })

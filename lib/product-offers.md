@@ -36,7 +36,8 @@ Product.name must match expected identity; each offer needs an exact name, packa
 Applied Nutrition Shopify variants join data-only metadata by handle, variant ID, SKU and
 price consistency. This distinguishes 91g from 390g without choosing cheapest or first.
 Single-package VPLab requires exact SKU and package text in Product.description. Nutrend
-requires matching WooCommerce product ID with every variant sharing the curated package.
+requires matching WooCommerce product ID with every variant sharing the curated package
+and identical display prices consistent with the published JSON-LD decimal precision.
 Missing or inconsistent package proof fails closed. Prices come only from JSON-LD Offer,
 including merchant-published rounding; checkout prices may differ.
 

@@ -31,7 +31,7 @@
         "@type": "Product"
       }
     ],
-    "extra": "<form data-product_id=\"5225\" data-product_variations=\"[{&quot;attributes&quot;: {&quot;attribute_pa_upakovka&quot;: &quot;60-kapsul&quot;}, &quot;sku&quot;: &quot;02370&quot;, &quot;variation_id&quot;: 5226}]\">"
+    "extra": "<form data-product_id=\"5225\" data-product_variations=\"[{&quot;attributes&quot;: {&quot;attribute_pa_upakovka&quot;: &quot;60-kapsul&quot;}, &quot;sku&quot;: &quot;02370&quot;, &quot;variation_id&quot;: 5226, &quot;display_price&quot;: 682.75}]\">"
   },
   "iso": {
     "url": "https://nutrend.com.ua/product/isodrinx-tabs/",
@@ -65,7 +65,7 @@
         "@type": "Product"
       }
     ],
-    "extra": "<form data-product_id=\"811\" data-product_variations=\"[{&quot;attributes&quot;: {&quot;attribute_pa_upakovka&quot;: &quot;12-tab&quot;, &quot;attribute_pa_smak&quot;: &quot;malyna&quot;}, &quot;sku&quot;: &quot;02026&quot;, &quot;variation_id&quot;: 815}, {&quot;attributes&quot;: {&quot;attribute_pa_upakovka&quot;: &quot;12-tab&quot;, &quot;attribute_pa_smak&quot;: &quot;lymon&quot;}, &quot;sku&quot;: &quot;01646&quot;, &quot;variation_id&quot;: 814}, {&quot;attributes&quot;: {&quot;attribute_pa_upakovka&quot;: &quot;12-tab&quot;, &quot;attribute_pa_smak&quot;: &quot;apelsyn&quot;}, &quot;sku&quot;: &quot;01645&quot;, &quot;variation_id&quot;: 813}]\">"
+    "extra": "<form data-product_id=\"811\" data-product_variations=\"[{&quot;attributes&quot;: {&quot;attribute_pa_upakovka&quot;: &quot;12-tab&quot;, &quot;attribute_pa_smak&quot;: &quot;malyna&quot;}, &quot;sku&quot;: &quot;02026&quot;, &quot;variation_id&quot;: 815, &quot;display_price&quot;: 286.14}, {&quot;attributes&quot;: {&quot;attribute_pa_upakovka&quot;: &quot;12-tab&quot;, &quot;attribute_pa_smak&quot;: &quot;lymon&quot;}, &quot;sku&quot;: &quot;01646&quot;, &quot;variation_id&quot;: 814, &quot;display_price&quot;: 286.14}, {&quot;attributes&quot;: {&quot;attribute_pa_upakovka&quot;: &quot;12-tab&quot;, &quot;attribute_pa_smak&quot;: &quot;apelsyn&quot;}, &quot;sku&quot;: &quot;01645&quot;, &quot;variation_id&quot;: 813, &quot;display_price&quot;: 286.14}]\">"
   },
   "zma": {
     "url": "https://vplab.com/products/vplab-zma",
