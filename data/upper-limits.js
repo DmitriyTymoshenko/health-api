@@ -162,4 +162,48 @@ const UPPER_LIMITS = {
   },
 }
 
+// #2038 metadata audit: task comment 13546, public sources checked 2026-10-05.
+// These are descriptors of the EXISTING reference, never a dose recommendation
+// or an assessment of applicability to a particular person. Original fields above
+// (including unverified historical notes) remain unchanged; status below qualifies them.
+const REFERENCE_METADATA = {
+  vitamin_d: ['formal_ul', 'all_sources', 'adults_19_plus', 'US_FNB', 'source_supported'],
+  vitamin_c: ['formal_ul', 'all_sources', 'adults_19_plus', 'US_FNB', 'source_supported'],
+  zinc: ['formal_ul', 'all_sources', 'adults_19_plus', 'US_FNB', 'source_supported'],
+  magnesium_supplemental: ['formal_ul', 'supplements_and_medications', 'adults_19_plus', 'US_FNB', 'source_supported'],
+  vitamin_b6: ['formal_ul', 'all_sources', 'adults_19_plus', 'US_FNB', 'source_supported'],
+  iron: ['formal_ul', 'all_sources', 'ages_14_plus', 'US_FNB', 'source_supported'],
+  selenium: ['formal_ul', 'all_sources', 'adults_19_plus', 'US_FNB', 'source_supported'],
+  vitamin_a: ['formal_ul', 'preformed_vitamin_a_all_sources', 'adults_19_plus', 'US_FNB', 'source_supported'],
+  vitamin_e: ['formal_ul', 'supplemental_alpha_tocopherol', 'adults_19_plus', 'US_FNB', 'source_supported'],
+  calcium: ['formal_ul', 'all_sources', 'adults_19_to_50', 'US_FNB', 'source_supported'],
+  folate_supplemental: ['formal_ul', 'synthetic_folate_supplements_and_fortified_food', 'adults_19_plus', 'US_FNB', 'source_supported'],
+  niacin: ['formal_ul', 'supplemental_niacin', 'adults_19_plus', 'US_FNB', 'source_supported'],
+  choline: ['formal_ul', 'all_sources', 'adults_19_plus', 'US_FNB', 'source_supported'],
+  omega3_epa_dha: ['other_reference', 'supplemental_epa_dha_combined', 'adults', 'EFSA', 'source_supported'],
+  // The cited pages do not establish a numeric comparison boundary. Do not
+  // infer a worldwide absence of UL, or safety, from a page omitting one.
+  creatine: ['unknown', 'unknown', 'unknown', 'unknown', 'context_only'],
+  beta_alanine: ['unknown', 'unknown', 'unknown', 'unknown', 'context_only'],
+  eaa: ['unknown', 'unknown', 'unknown', 'unknown', 'unverified'],
+  psyllium: ['unknown', 'unknown', 'unknown', 'unknown', 'unverified'],
+  ashwagandha: ['unknown', 'unknown', 'unknown', 'unknown', 'context_only'],
+  lions_mane: ['unknown', 'unknown', 'unknown', 'unknown', 'unverified'],
+  ginseng: ['unknown', 'unknown', 'unknown', 'unknown', 'context_only'],
+}
+for (const [key, [kind, scope, population, jurisdiction, status]] of Object.entries(REFERENCE_METADATA)) {
+  const row = UPPER_LIMITS[key]
+  row.reference = {
+    kind, scope, population, jurisdiction,
+    provenance: {
+      status,
+      checked_at: '2026-10-05',
+      retrieved_at: ['eaa', 'lions_mane'].includes(key) ? null : '2026-10-05',
+      ledger: 'task:2038/comment:13546',
+      retrieval_url: key === 'vitamin_e'
+        ? row.source_url + '?uid=c9cfa78190248s16' : row.source_url,
+    },
+  }
+}
+
 module.exports = { UPPER_LIMITS }
