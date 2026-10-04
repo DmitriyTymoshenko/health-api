@@ -571,10 +571,12 @@ module.exports = function (getDB, sources) {
       }
       const db = getDB()
 
-      const [habits, allActiveRules, dayGoals] = await Promise.all([
+      const yesterday = addDaysToKyivDay(day, -1)
+      const [habits, allActiveRules, dayGoals, carryoverGoals] = await Promise.all([
         db.collection('life_habits').find({ archived_at: null }).sort({ created_at: 1 }).toArray(),
         db.collection('life_habit_rules').find({ active: true }).sort({ order: 1 }).toArray(),
         db.collection('life_day_goals').find({ day }).toArray(),
+        db.collection('life_day_goals').find({ day: yesterday, done: false }).sort({ created_at: 1 }).toArray(),
       ])
 
       const rulesByHabit = {}
@@ -687,6 +689,7 @@ module.exports = function (getDB, sources) {
       res.json({
         day,
         day_goals: dayGoals,
+        carryover_goals: carryoverGoals,
         focus,
         habits: habitsOut,
         state: state.block,

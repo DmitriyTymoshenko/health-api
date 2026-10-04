@@ -16,12 +16,13 @@ const { ObjectId } = require('mongodb')
 const lifeHabitsRoute = require('../../routes/life_habits')
 import { makeMockCollection } from './utils/mockLifeMongo'
 
-function makeApp(seed: { habits?: any[]; rules?: any[]; checks?: any[] } = {}) {
+function makeApp(seed: { habits?: any[]; rules?: any[]; checks?: any[]; dayGoals?: any[]; calendar?: any[] } = {}) {
   const collections: Record<string, ReturnType<typeof makeMockCollection>> = {
     life_habits: makeMockCollection(seed.habits || []),
     life_habit_rules: makeMockCollection(seed.rules || []),
     life_rule_checks: makeMockCollection(seed.checks || []),
-    life_day_goals: makeMockCollection([]),
+    life_day_goals: makeMockCollection(seed.dayGoals || []),
+    life_calendar_snapshots: makeMockCollection(seed.calendar || []),
   }
   const db = {
     collection(name: string) {
@@ -496,6 +497,25 @@ describe('GET /api/life/today', () => {
     expect(res.body.habits.length).toBe(1)
     expect(res.body.habits[0].done_today).toBeNull()
     expect(res.body.habits[0].rules[0].check).toEqual({ done: null, two_minute_version: null })
+  })
+
+  it('#1614-F returns unfinished previous-day goals as carryover_goals without moving them', async () => {
+    const yesterdayOpen = new ObjectId()
+    const yesterdayDone = new ObjectId()
+    const todayOpen = new ObjectId()
+    const { app } = makeApp({
+      dayGoals: [
+        { _id: yesterdayOpen, day: '2026-10-01', text: 'Перенести звіт', done: false, created_at: new Date('2026-10-01T08:00:00.000Z') },
+        { _id: yesterdayDone, day: '2026-10-01', text: 'Закрита вчора', done: true, created_at: new Date('2026-10-01T09:00:00.000Z') },
+        { _id: todayOpen, day: '2026-10-02', text: 'Сьогоднішня ціль', done: false, created_at: new Date('2026-10-02T08:00:00.000Z') },
+      ],
+    })
+
+    const res = await request(app).get('/api/life/today').query({ day: '2026-10-02' })
+    expect(res.status).toBe(200)
+    expect(res.body.day_goals.map((g: any) => g.text)).toEqual(['Сьогоднішня ціль'])
+    expect(res.body.carryover_goals.map((g: any) => g.text)).toEqual(['Перенести звіт'])
+    expect(res.body.carryover_goals[0].day).toBe('2026-10-01')
   })
 
   it('done_today:true when every active rule is checked for that day', async () => {

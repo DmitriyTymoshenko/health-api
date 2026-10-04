@@ -31,7 +31,7 @@ import { makeMockCollection } from './utils/mockLifeMongo'
 import { assertMatchesContract } from './utils/validateLifeContract'
 
 function makeApp(
-  seed: { habits?: any[]; rules?: any[]; checks?: any[]; dayGoals?: any[]; profile?: any[] } = {}
+  seed: { habits?: any[]; rules?: any[]; checks?: any[]; dayGoals?: any[]; profile?: any[]; calendar?: any[] } = {}
 ) {
   const collections: Record<string, ReturnType<typeof makeMockCollection>> = {
     life_habits: makeMockCollection(seed.habits || []),
@@ -39,6 +39,7 @@ function makeApp(
     life_rule_checks: makeMockCollection(seed.checks || []),
     life_day_goals: makeMockCollection(seed.dayGoals || []),
     life_profile: makeMockCollection(seed.profile || []),
+    life_calendar_snapshots: makeMockCollection(seed.calendar || []),
   }
   const db = {
     collection(name: string) {
