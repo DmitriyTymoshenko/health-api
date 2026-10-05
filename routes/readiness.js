@@ -1,6 +1,7 @@
 const { Router } = require('express')
 const { buildExerciseTrends } = require('../lib/exercise-trends')
 const { buildReadiness } = require('../lib/readiness')
+const { addDaysToKyivDay } = require('../lib/kyiv-day')
 const { formatDateKyiv, getKyivIsoWeekday, resolveScheduledDayKey } = require('../lib/training-program')
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
@@ -9,9 +10,7 @@ const HISTORY_WINDOW_DAYS = 6 // trailing days before the target, on top of the 
 
 /** @param {string} dateStr YYYY-MM-DD @param {number} days @returns {string} dateStr - days, YYYY-MM-DD */
 function subtractDays(dateStr, days) {
-  const d = new Date(dateStr + 'T00:00:00Z')
-  d.setUTCDate(d.getUTCDate() - days)
-  return d.toISOString().slice(0, 10)
+  return addDaysToKyivDay(dateStr, -days) // #1299: shared date-only helper
 }
 
 module.exports = function (getDB) {

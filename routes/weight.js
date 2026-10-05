@@ -1,6 +1,6 @@
 const { Router } = require('express')
 const { requireFields, validateDate } = require('../lib/validate')
-const { todayKyiv, addDaysToKyivDay } = require('../lib/kyiv-day')
+const { todayKyiv, toKyivDay, addDaysToKyivDay } = require('../lib/kyiv-day')
 
 module.exports = function (getDB) {
   const router = Router()
@@ -64,7 +64,7 @@ module.exports = function (getDB) {
 
       if (weightGoal && weightGoal.start_value) {
         baselineWeight = weightGoal.start_value
-        baselineDate = new Date(weightGoal.created_at).toISOString().split('T')[0]
+        baselineDate = toKyivDay(weightGoal.created_at) // #1299: created_at is an INSTANT → its Kyiv calendar day (UTC slice put 00:00–03:00 Kyiv on the previous day)
         daysDiff = Math.round((new Date(latest.date) - new Date(baselineDate)) / 86400000) || 1
         oldest7 = { weight_kg: baselineWeight, date: baselineDate }
       } else {

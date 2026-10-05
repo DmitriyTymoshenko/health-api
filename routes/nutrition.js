@@ -413,9 +413,7 @@ module.exports = function (getDB) {
       if (!date || typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
         return res.status(400).json({ error: 'date is required (YYYY-MM-DD)' })
       }
-      const sourceDateObj = new Date(date + 'T00:00:00Z')
-      sourceDateObj.setUTCDate(sourceDateObj.getUTCDate() - 1)
-      const sourceDate = sourceDateObj.toISOString().split('T')[0]
+      const sourceDate = addDaysToKyivDay(date, -1) // #1299: date-only calendar math, shared helper
 
       const filter = meal_type ? { date: sourceDate, meal_type } : { date: sourceDate }
       const sourceEntries = await db.collection('nutrition_log').find(filter).toArray()
