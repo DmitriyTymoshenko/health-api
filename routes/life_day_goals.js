@@ -148,9 +148,24 @@ module.exports = function (getDB) {
       if (!isValidKyivDayFormat(toDay)) {
         return res.status(400).json({ error: 'Invalid day format. Use YYYY-MM-DD' })
       }
+      // 3-focus cap applies on the TARGET day too: a focus goal moved onto a
+      // full day is demoted to a regular goal (carryover must not fail).
+      const set = { day: toDay }
+      if (doc.focus === true && toDay !== doc.day) {
+        const existing = await db.collection('life_day_goals').find({ day: toDay, focus: true }).toArray()
+        if (existing.length >= MAX_FOCUS_PER_DAY) {
+          set.focus = false
+          set.focus_rank = null
+        } else {
+          const used = new Set(existing.map((g) => g.focus_rank))
+          if (!doc.focus_rank || used.has(doc.focus_rank)) {
+            set.focus_rank = [1, 2, 3].find((r) => !used.has(r)) || null
+          }
+        }
+      }
       const result = await db.collection('life_day_goals').findOneAndUpdate(
         { _id: id },
-        { $set: { day: toDay } },
+        { $set: set },
         { returnDocument: 'after' }
       )
       res.json(result)

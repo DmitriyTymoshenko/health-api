@@ -99,6 +99,26 @@ describe('PUT /api/life/day-goals/:id', () => {
   })
 })
 
+describe('POST /api/life/day-goals/:id/move — focus cap (#2042)', () => {
+  const mk = (day: string, rank: number) => ({ _id: new ObjectId(), day, text: 't', done: false, focus: true, focus_rank: rank, created_at: new Date() })
+  it('demotes a focus goal moved onto a day that already has 3 focus goals', async () => {
+    const mover = mk('2026-10-04', 1)
+    const { app } = makeApp({ dayGoals: [mover, mk('2026-10-05', 1), mk('2026-10-05', 2), mk('2026-10-05', 3)] })
+    const res = await request(app).post(`/api/life/day-goals/${mover._id}/move`).send({ to_day: '2026-10-05' })
+    expect(res.status).toBe(200)
+    expect(res.body.day).toBe('2026-10-05')
+    expect(res.body.focus).toBe(false)
+    expect(res.body.focus_rank).toBeNull()
+  })
+  it('keeps focus and gives a free rank when the target day has room', async () => {
+    const mover = mk('2026-10-04', 1)
+    const { app } = makeApp({ dayGoals: [mover, mk('2026-10-05', 1)] })
+    const res = await request(app).post(`/api/life/day-goals/${mover._id}/move`).send({ to_day: '2026-10-05' })
+    expect(res.body.focus).toBe(true)
+    expect(res.body.focus_rank).toBe(2)
+  })
+})
+
 describe('POST /api/life/day-goals/:id/move', () => {
   it('defaults to day+1 and mutates the SAME doc (no history)', async () => {
     const id = new ObjectId()
