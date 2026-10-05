@@ -292,6 +292,18 @@ describe('POST /api/workouts/log-text', () => {
     const res2 = await request(app).post('/api/workouts/log-text').send({ date: '2026-09-18', text: 'Тест2: 6х20' })
     expect(res2.body.needs_muscle_group_clarification).toEqual([])
   })
+  it('#2111 append preserves an additional identical set; snapshot remains idempotent', async () => {
+    const { app } = makeApp({ exercises: [{name:'Присідання',weight_unit:'kg'}] })
+    const body = {date:'2026-09-18',text:'Присідання: 8х80'}
+    await request(app).post('/api/workouts/log-text').send(body)
+    const snapshot = await request(app).post('/api/workouts/log-text').send(body)
+    expect(snapshot.body.exercises[0].sets).toHaveLength(1)
+    const appended = await request(app).post('/api/workouts/log-text').send({...body,mode:'append'})
+    expect(appended.body.exercises[0].sets).toHaveLength(2)
+    expect(appended.body.exercises[0].sets[0]).toEqual(appended.body.exercises[0].sets[1])
+    expect((await request(app).post('/api/workouts/log-text').send({...body,mode:'invalid'})).status).toBe(400)
+  })
+
 })
 
 export {}

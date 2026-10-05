@@ -625,7 +625,11 @@ module.exports = function (getDB) {
 
   async function readPRLibrary(db, workouts) {
     const names = exerciseNamesFromWorkouts(workouts)
-    return names.length ? db.collection('exercises_library').find({ name: { $in: names } }).toArray() : []
+    if (!names.length) return []
+    const col = db.collection('exercises_library')
+    const library = await col.find({ name: { $in: names } }).toArray()
+    const ids = [...new Set(library.filter(ex => !ex.equipment && ex.catalog_id).map(ex => ex.catalog_id))]
+    return ids.length ? [...library, ...await col.find({ catalog_id: { $in: ids }, equipment: { $ne: null } }).toArray()] : library
   }
 
   // Helper: calculate PRs from all workouts for given exercises
@@ -751,7 +755,9 @@ module.exports = function (getDB) {
   router.post('/log-text', async (req, res) => {
     try {
       const db = getDB()
-      const { text, date, source } = req.body
+      const { text, date, source, mode = 'snapshot' } = req.body
+      // snapshot replays a full dictation; append records an explicitly additional set.
+      if (!['snapshot', 'append'].includes(mode)) return res.status(400).json({ error: 'mode must be snapshot or append' })
       if (!text || !String(text).trim()) {
         return res.status(400).json({ error: 'text required' })
       }
@@ -799,7 +805,7 @@ module.exports = function (getDB) {
         const insertResult = await workoutsCol.insertOne(doc)
         resultDoc = { ...doc, _id: insertResult.insertedId }
       } else {
-        const mergedExercises = mergeExercisesIntoDoc(existing.exercises, newExercises)
+        const mergedExercises = mergeExercisesIntoDoc(existing.exercises, newExercises, mode)
         const needsUnitClarification = exercisesNeedingUnit(mergedExercises)
         // #1408: exercises carried over from `existing` that this POST's text didn't
         // touch have no entry in libByName yet — resolve them with one extra lookup so

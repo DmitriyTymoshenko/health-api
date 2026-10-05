@@ -11,7 +11,7 @@ function appFor(docs: any[], library: any[] = [], weights: any[] = [{date:'2026-
     const data = name === 'workouts' ? docs : name === 'exercises_library' ? library : name === 'weight_log' ? weights : []
     return {
       find(filter:any = {}) {
-        let rows = data.filter((w:any) => (!filter['exercises.name'] || w.exercises?.some((e:any)=>e.name===filter['exercises.name'])) && (!filter.date?.$lte || w.date <= filter.date.$lte) && (!filter.date?.$gte || w.date >= filter.date.$gte))
+        let rows = data.filter((w:any) => (!filter.name?.$in || filter.name.$in.includes(w.name)) && (!filter.catalog_id?.$in || filter.catalog_id.$in.includes(w.catalog_id)) && (filter.equipment?.$ne !== null || w.equipment != null) && (!filter['exercises.name'] || w.exercises?.some((e:any)=>e.name===filter['exercises.name'])) && (!filter.date?.$lte || w.date <= filter.date.$lte) && (!filter.date?.$gte || w.date >= filter.date.$gte))
         const cursor = {sort(order:any) {if(order.date) rows=[...rows].sort((a,b)=>a.date.localeCompare(b.date)*order.date);return this},skip(){return this},limit(n:number){rows=rows.slice(0,n);return this},async toArray(){return rows}}
         return cursor
       },
@@ -22,6 +22,26 @@ function appFor(docs: any[], library: any[] = [], weights: any[] = [{date:'2026-
   }}
   const app=express();app.use(express.json());app.use('/api/workouts',workoutsRoute(()=>db));return {app,writes}
 }
+describe('#2111 catalog equipment', () => {
+  const {buildPRs} = require('../../lib/workout-metrics')
+  const workouts = [{date:'2026-10-05',exercises:[{name:'Молотки на біцепс',sets:[{reps:8,weight_kg:20}]}]}]
+  it('uses unambiguous sibling metadata without changing raw docs', () => {
+    const library = [{name:'Молотки на біцепс',catalog_id:'Hammer_Curls',equipment:null},{name:'Молоткові згинання',catalog_id:'Hammer_Curls',equipment:'dumbbell'}]
+    expect(buildPRs(workouts,library)['Молотки на біцепс'].max_1rm_kind).toBe('e1rm')
+    expect(library[0].equipment).toBeNull()
+  })
+  it('route reads sibling catalog metadata outside logged exercise names', async () => {
+    const {app} = appFor(workouts,[{name:'Молотки на біцепс',catalog_id:'Hammer_Curls',equipment:null},{name:'Молоткові згинання',catalog_id:'Hammer_Curls',equipment:'dumbbell'}])
+    const r = await request(app).get('/api/workouts/prs')
+    expect(r.status).toBe(200)
+    expect(r.body.prs[0].max_1rm_kind).toBe('e1rm')
+  })
+  it('never guesses on conflicting catalog metadata', () => {
+    const library = [{name:'Молотки на біцепс',catalog_id:'Hammer_Curls',equipment:null},{catalog_id:'Hammer_Curls',equipment:'dumbbell'},{catalog_id:'Hammer_Curls',equipment:'machine'}]
+    expect(buildPRs(workouts,library)['Молотки на біцепс'].max_1rm_kind).toBe('best_set')
+  })
+})
+
 describe('#1692 raw-derived workout correctness',()=>{
   it('autofills the actual Ukrainian push-up alias; dips/pull-ups keep full BW',()=>{
     const names=[push,'Відтискання вузький хват (трицепс)','Віджимання на брусах','Підтягування']
