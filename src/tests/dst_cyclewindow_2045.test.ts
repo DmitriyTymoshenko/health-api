@@ -10,7 +10,7 @@ describe('#2045 DST-crossing day math', () => {
     expect(w.active_end).toBe('2026-04-03')
     expect(w.pause_end).toBe('2026-04-17')
   })
-  test('cycleWindow crossing autumn DST', () => {
+  test('cycleWindow crossing autumn DST (regression-only, also green on old code)', () => {
     expect(cycleWindow({ start_date: '2026-09-20', duration_weeks: 6 }).active_end).toBe('2026-11-01')
   })
   test('labs nextDate crossing spring DST', () => {
@@ -19,3 +19,5 @@ describe('#2045 DST-crossing day math', () => {
     expect(item.nextDate).toBe('2026-04-30')
   })
 })
+
+export {}
