@@ -161,3 +161,32 @@ describe('POST /api/life/day-goals/:id/move', () => {
 })
 
 export {}
+
+describe('self-directed focus and meaningful outcomes', () => {
+  it('promotes, edits and removes existing tasks; allows only three concurrent focus tasks', async () => {
+    const { app, collection } = makeApp()
+    const created = await Promise.all(Array.from({ length: 4 }, (_, i) => request(app).post('/api/life/day-goals').send({ day: '2026-10-18', text: `Завдання ${i}` })))
+    const promoted = await Promise.all(created.map((r) => request(app).put(`/api/life/day-goals/${r.body._id}`).send({ focus: true, outcome: 'Готовий документ' })))
+    expect(promoted.map((r) => r.status).sort()).toEqual([200,200,200,400])
+    expect(collection._docs().filter((g: any) => g.focus)).toHaveLength(3)
+    const id = created[0].body._id
+    await request(app).put(`/api/life/day-goals/${id}`).send({ text: 'Новий зміст', focus: false })
+    const read = await request(app).get('/api/life/day-goals?day=2026-10-18')
+    expect(read.body.find((g: any) => g._id === id)).toMatchObject({ text: 'Новий зміст', outcome: 'Готовий документ', focus: false, focus_rank: null })
+    const fourth = await request(app).put(`/api/life/day-goals/${created[3].body._id}`).send({ focus: true })
+    expect(fourth.status).toBe(200)
+    expect(fourth.body.confirmed_at).toBeTruthy()
+  })
+  it('parallel creates never exceed three focus slots', async () => {
+    const { app, collection } = makeApp()
+    const results = await Promise.all(Array.from({ length: 5 }, (_, i) => request(app).post('/api/life/day-goals').send({ text: `Фокус ${i}`, focus: true })))
+    expect(results.filter((r) => r.status === 201)).toHaveLength(3)
+    expect(collection._docs()).toHaveLength(3)
+  })
+  it('rejects empty text and non-boolean focus on update', async () => {
+    const { app } = makeApp()
+    expect((await request(app).post('/api/life/day-goals').send({ text: '  ' })).status).toBe(400)
+    const r = await request(app).post('/api/life/day-goals').send({ text: 'x' })
+    expect((await request(app).put(`/api/life/day-goals/${r.body._id}`).send({ focus: 'true' })).status).toBe(400)
+  })
+})

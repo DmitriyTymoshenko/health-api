@@ -266,9 +266,9 @@ describe('tracker habits over the real route', () => {
       ],
     })
     const sb = (await request(app).get(`/api/life/habits/${b}/stats?day=${TODAY}`)).body
-    expect(sb.dont_miss_twice).toBe('broken') // 10-05 missed, 10-06 absent (missed), today pending
+    expect(sb.dont_miss_twice).toBe('ok') // an absent day is unknown, not a second failure
     const sbr = (await request(app).get(`/api/life/habits/${br}/stats?day=${TODAY}`)).body
-    expect(sbr.clean_days).toBe(3) // failure on 10-04 -> 05,06,07 clean
+    expect(sbr.clean_days).toBeNull() // no explicit confirmation on 05,06,07
     assertMatchesContract('HabitStatsResponse', sbr)
   })
 
@@ -328,5 +328,17 @@ describe('GET /nudges/due + POST /nudges/ack', () => {
     const { app } = makeApp({ life_habits: [{ ...habit, archived_at: new Date() }] })
     expect((await request(app).get('/api/life/nudges/due?at=nope')).status).toBe(400)
     expect((await request(app).get('/api/life/nudges/due?at=' + MON_10)).body.nudges).toEqual([])
+  })
+})
+
+describe('unknown is neither success nor failure', () => {
+  it('no check-ins produces no percentage and no warning', () => {
+    const stats = T.computeStats({ habit: { type: 'break', created_day: '2026-10-01', frequency: { kind: 'daily' } }, today: TODAY, doneByDay: {} })
+    expect(stats.pct).toBeNull()
+    expect(stats.dont_miss_twice).toBe('ok')
+    expect(T.confirmedCleanDays({ kind: 'daily' }, '2026-10-01', TODAY, {})).toBeNull()
+  })
+  it('non-scheduled days neither extend nor break confirmed clean days', () => {
+    expect(T.confirmedCleanDays({ kind: 'weekdays', days: [1,3] }, '2026-10-05', '2026-10-07', { '2026-10-05': true, '2026-10-07': true })).toBe(2)
   })
 })

@@ -1,8 +1,9 @@
 const { Router } = require('express')
 const { ObjectId } = require('mongodb')
+const { validateBody } = require('../lib/life-contracts')
 const { requireFields } = require('../lib/validate')
 const { todayKyiv, toKyivDay, isValidKyivDayFormat, addDaysToKyivDay } = require('../lib/kyiv-day')
-const { habitDoneToday, ruleCheckState, computeDaysClean } = require('../lib/life-rules')
+const { habitDoneToday, ruleCheckState } = require('../lib/life-rules')
 const trackers = require('../lib/life-trackers')
 const lifeToday = require('../lib/life-today')
 
@@ -56,22 +57,15 @@ async function loadDoneByDay(db, habit, fromDay, toDay) {
     for (const [day, st] of states) doneByDay[day] = st.met
     return { doneByDay, states }
   }
-  if (habit.type === 'break') {
-    const rules = await db.collection('life_habit_rules').find({ habit_id: habit._id }).toArray()
-    const ids = rules.map((r) => r._id)
-    const fails = ids.length
-      ? await db.collection('life_rule_checks').find({ rule_id: { $in: ids }, done: false }).toArray()
-      : []
-    const failDays = new Set(fails.map((c) => c.day))
-    for (let d = fromDay; d <= toDay; d = addDaysToKyivDay(d, 1)) doneByDay[d] = !failDays.has(d)
-    return { doneByDay, failDays }
-  }
   const rules = await db.collection('life_habit_rules').find({ habit_id: habit._id, active: true }).toArray()
   if (!rules.length) return { doneByDay }
   const checks = await db.collection('life_rule_checks').find({ habit_id: habit._id, day: { $gte: fromDay, $lte: toDay } }).toArray()
   const byDay = {}
   for (const c of checks) (byDay[c.day] = byDay[c.day] || {})[String(c.rule_id)] = c
-  for (const [day, map] of Object.entries(byDay)) doneByDay[day] = habitDoneToday(rules, map) === true
+  for (const [day, map] of Object.entries(byDay)) {
+    const archivedFailure = habit.type === 'break' && Object.values(map).some((check) => check.done === false && check.two_minute_version !== true)
+    doneByDay[day] = archivedFailure ? false : habitDoneToday(rules, map)
+  }
   return { doneByDay }
 }
 
@@ -140,11 +134,12 @@ module.exports = function (getDB, sources) {
   // created without an implementation intention — both from the dashboard
   // and from Lisa via MCP. Mirrors `contracts/life-contracts.schema.json`
   // (`implementation` is `["string","null"]`, not just `"string"`).
-  router.post('/habits', requireFields('type', 'name'), async (req, res) => {
+  router.post('/habits', validateBody('HabitCreateRequest'), requireFields('type', 'name'), async (req, res) => {
     try {
       if (req.body.type !== 'build' && req.body.type !== 'break') {
         return res.status(400).json({ error: "type must be 'build' or 'break'" })
       }
+      if (req.body.purpose != null && (typeof req.body.purpose !== 'string' || req.body.purpose.length > 1000)) return res.status(400).json({ error: 'Purpose must be text up to 1000 characters' })
       const db = getDB()
       // #1602: frequency (daily|weekdays|weekly_n), tracker and triggers are validated, not silently dropped.
       const freq = trackers.validateFrequency(req.body.frequency)
@@ -161,8 +156,9 @@ module.exports = function (getDB, sources) {
         name: req.body.name,
         sphere: req.body.sphere ?? null,
         identity: req.body.type === 'build' ? req.body.identity ?? null : null,
+        purpose: typeof req.body.purpose === 'string' ? req.body.purpose.trim().slice(0, 1000) : null,
         implementation: req.body.implementation ?? null,
-        two_minute: req.body.type === 'build' ? req.body.two_minute ?? null : null,
+        two_minute: req.body.two_minute ?? null,
         frequency: freq.value,
         tracker: trk.value,
         triggers: trg.value,
@@ -208,8 +204,8 @@ module.exports = function (getDB, sources) {
   })
 
   // PUT /api/life/habits/:id — partial update of the editable fields.
-  const HABIT_EDITABLE_FIELDS = ['type', 'name', 'sphere', 'identity', 'implementation', 'two_minute']
-  router.put('/habits/:id', async (req, res) => {
+  const HABIT_EDITABLE_FIELDS = ['type', 'name', 'sphere', 'identity', 'implementation', 'two_minute', 'purpose']
+  router.put('/habits/:id', validateBody('HabitUpdateRequest'), async (req, res) => {
     try {
       const id = toObjectId(req.params.id)
       if (!id) return res.status(404).json({ error: 'Not found' })
@@ -217,6 +213,7 @@ module.exports = function (getDB, sources) {
       if (req.body.type !== undefined && req.body.type !== 'build' && req.body.type !== 'break') {
         return res.status(400).json({ error: "type must be 'build' or 'break'" })
       }
+      if (req.body.purpose != null && (typeof req.body.purpose !== 'string' || req.body.purpose.length > 1000)) return res.status(400).json({ error: 'Purpose must be text up to 1000 characters' })
       const set = { updated_at: new Date() }
       for (const f of HABIT_EDITABLE_FIELDS) {
         if (req.body[f] !== undefined) set[f] = req.body[f]
@@ -372,7 +369,7 @@ module.exports = function (getDB, sources) {
   // calls for the SAME day update in place, never duplicate (life_rule_checks
   // has a unique {rule_id:1,day:1} index as the DB-level backstop — see
   // server.js connectDB()).
-  router.post('/rules/:id/check', requireFields('done', 'source'), async (req, res) => {
+  router.post('/rules/:id/check', validateBody('RuleCheckRequest'), requireFields('done', 'source'), async (req, res) => {
     try {
       const ruleId = toObjectId(req.params.id)
       if (!ruleId) return res.status(404).json({ error: 'Rule not found' })
@@ -395,8 +392,8 @@ module.exports = function (getDB, sources) {
             two_minute_version: !!req.body.two_minute_version,
             source: req.body.source,
             // #1602: optional slip analysis (why / what triggered it) for a missed check-in.
-            ...(typeof req.body.slip_reason === 'string' ? { slip_reason: req.body.slip_reason.slice(0, 500) } : {}),
-            ...(typeof req.body.slip_trigger === 'string' ? { slip_trigger: req.body.slip_trigger.slice(0, 500) } : {}),
+            ...(!req.body.done && !req.body.two_minute_version ? (typeof req.body.slip_reason === 'string' ? { slip_reason: req.body.slip_reason.slice(0, 500) } : {}) : { slip_reason: null }),
+            ...(!req.body.done && !req.body.two_minute_version ? (typeof req.body.slip_trigger === 'string' ? { slip_trigger: req.body.slip_trigger.slice(0, 500) } : {}) : { slip_trigger: null }),
             checked_at: new Date(),
           },
         },
@@ -471,13 +468,9 @@ module.exports = function (getDB, sources) {
       if (startDay > today) {
         stats = trackers.computeStats({ habit: { ...habit, frequency, created_day: today }, today, doneByDay: {}, windowDays })
       } else {
-        const { doneByDay, failDays } = await loadDoneByDay(db, habit, startDay, today)
+        const { doneByDay } = await loadDoneByDay(db, habit, startDay, today)
         let daysClean = null
-        if (habit.type === 'break') {
-          const flags = []
-          for (let d = startDay; d <= today; d = addDaysToKyivDay(d, 1)) flags.push(failDays.has(d))
-          daysClean = computeDaysClean(flags)
-        }
+        if (habit.type === 'break') daysClean = trackers.confirmedCleanDays(frequency, startDay, today, doneByDay)
         stats = trackers.computeStats({ habit: { ...habit, frequency, created_day: startDay }, today, doneByDay, windowDays, daysClean })
       }
       res.json({ habit_id: String(habit._id), day: today, type: habit.type, frequency, ...stats })
@@ -593,33 +586,6 @@ module.exports = function (getDB, sources) {
       const checksByRuleId = {}
       for (const c of todayChecks) checksByRuleId[String(c.rule_id)] = c
 
-      // For break habits: days-clean needs every day strictly AFTER
-      // created_at up to (and including) `day`, so pull the full history in
-      // one query per habit's rule set rather than N+1 per rule.
-      const breakHabits = habits.filter((h) => h.type === 'break')
-      // #1614 p.7: failures on ARCHIVED rules still count (else archiving a rule
-      // that carried a failure inflates days_clean) -> pull ALL rules of break
-      // habits, not only active ones.
-      const breakHabitIds = breakHabits.map((h) => h._id)
-      const allBreakRules = breakHabitIds.length
-        ? await db.collection('life_habit_rules').find({ habit_id: { $in: breakHabitIds } }).toArray()
-        : []
-      const breakRuleIds = allBreakRules.map((r) => r._id)
-      const historyChecks = breakRuleIds.length
-        ? await db
-            .collection('life_rule_checks')
-            .find({ rule_id: { $in: breakRuleIds }, done: false })
-            .toArray()
-        : []
-      const failureDaysByHabit = {}
-      for (const c of historyChecks) {
-        const rule = allBreakRules.find((r) => String(r._id) === String(c.rule_id))
-        if (!rule) continue
-        const key = String(rule.habit_id)
-        if (!failureDaysByHabit[key]) failureDaysByHabit[key] = new Set()
-        failureDaysByHabit[key].add(c.day)
-      }
-
       // #1602: tracker habits — state DERIVED from the source collection for `day`.
       const trackerStateByHabit = {}
       await Promise.all(
@@ -631,40 +597,27 @@ module.exports = function (getDB, sources) {
           })
       )
 
-      const habitsOut = habits.map((habit) => {
-        if (habit.tracker) {
-          const st = trackerStateByHabit[String(habit._id)]
-          return {
-            ...habit,
-            rules: [],
-            // present-but-below-threshold today is still in progress: neutral null, never false
-            done_today: st && st.met ? true : null,
-            days_clean: null,
-            tracker_state: { value: st ? st.value : null, threshold: habit.tracker.threshold, met: st ? st.met : null },
-          }
-        }
+      const habitsOut = await Promise.all(habits.map(async (habit) => {
+        const frequency = habit.frequency || { kind: 'daily' }
+        const createdDay = toKyivDay(habit.created_at)
+        const fromDay = createdDay > trackers.weekStart(day) ? trackers.weekStart(day) : createdDay
+        const { doneByDay } = await loadDoneByDay(db, habit, fromDay, day)
+        const weekCount = Object.entries(doneByDay).filter(([d, done]) => d >= trackers.weekStart(day) && done === true).length
+        const scheduled = frequency.kind !== 'weekdays' || frequency.days.includes(trackers.isoWeekday(day))
+        const quotaMet = frequency.kind === 'weekly_n' && weekCount >= frequency.n
         const habitRules = rulesByHabit[String(habit._id)] || []
-        const rulesOut = habitRules.map((rule) => ({
-          ...rule,
-          check: ruleCheckState(checksByRuleId[String(rule._id)]),
-        }))
-        const done_today = habitDoneToday(habitRules, checksByRuleId)
-
-        let days_clean = null
-        if (habit.type === 'break') {
-          const createdDay = toKyivDay(habit.created_at)
-          const failureDays = failureDaysByHabit[String(habit._id)] || new Set()
-          const flags = []
-          for (let d = new Date(createdDay + 'T12:00:00Z'); toKyivDay(d) <= day; d.setUTCDate(d.getUTCDate() + 1)) {
-            const kd = toKyivDay(d)
-            if (kd === createdDay) continue // creation day itself = 0, not counted (SPEC table)
-            flags.push(failureDays.has(kd))
-          }
-          days_clean = computeDaysClean(flags)
+        const rulesOut = habitRules.map((rule) => ({ ...rule, check: ruleCheckState(checksByRuleId[String(rule._id)]) }))
+        const st = habit.tracker ? trackerStateByHabit[String(habit._id)] : null
+        const doneToday = habit.tracker ? (st?.met ? true : null) : habitDoneToday(habitRules, checksByRuleId)
+        const status = !scheduled ? 'not_scheduled' : doneToday === true
+          ? (rulesOut.some((r) => r.check.two_minute_version) ? 'minimal' : 'done')
+          : quotaMet ? 'quota_met' : doneToday === false ? 'skipped' : 'unmarked'
+        return { ...habit, rules: habit.tracker ? [] : rulesOut, done_today: doneToday,
+          days_clean: habit.type === 'break' ? trackers.confirmedCleanDays(frequency, createdDay, day, doneByDay) : null,
+          scheduled_today: scheduled, week_count: weekCount, status,
+          ...(habit.tracker ? { tracker_state: { value: st ? st.value : null, threshold: habit.tracker.threshold, met: st ? st.met : null } } : {}),
         }
-
-        return { ...habit, rules: rulesOut, done_today, days_clean }
-      })
+      }))
 
       // #1601: focus + state/calendar/food — each block independently null+reason.
       const focus = dayGoals

@@ -1,5 +1,6 @@
 const { Router } = require('express')
 const { ObjectId } = require('mongodb')
+const { validateBody } = require('../lib/life-contracts')
 const { requireFields } = require('../lib/validate')
 const { todayKyiv, addDaysToKyivDay, isValidKyivDayFormat } = require('../lib/kyiv-day')
 const { MAX_FOCUS_PER_DAY } = require('../lib/life-today')
@@ -16,6 +17,20 @@ function toObjectId(id) {
 
 module.exports = function (getDB) {
   const router = Router()
+  // One health-api process owns these routes. Serialize mutations so concurrent
+  // requests cannot each claim the last focus slot (create, move and update).
+  let tail = Promise.resolve()
+  router.use(async (req, res, next) => {
+    if (!['POST', 'PUT', 'DELETE'].includes(req.method)) return next()
+    const previous = tail
+    let release
+    tail = new Promise((resolve) => { release = resolve })
+    await previous
+    if (res.destroyed) { release(); return }
+    res.once('finish', release)
+    res.once('close', release)
+    next()
+  })
 
   // GET /api/life/day-goals?day= — defaults to today (Kyiv).
   router.get('/day-goals', async (req, res) => {
@@ -35,12 +50,13 @@ module.exports = function (getDB) {
   // POST /api/life/day-goals — {day?, text, source?, focus?, focus_rank?, proposed_by?}.
   // #1601 (SPEC §11.1): ≤3 `focus:true` docs per day — the 4th → 400. A focus
   // goal proposed by Lisa is stored UNCONFIRMED (confirmed_at:null) until one tap.
-  router.post('/day-goals', requireFields('text'), async (req, res) => {
+  router.post('/day-goals', validateBody('DayGoalCreateRequest'), requireFields('text'), async (req, res) => {
     try {
       const day = req.body.day || todayKyiv()
       if (!isValidKyivDayFormat(day)) {
         return res.status(400).json({ error: 'Invalid day format. Use YYYY-MM-DD' })
       }
+      if (typeof req.body.text !== 'string' || !req.body.text.trim() || req.body.text.length > 1000) return res.status(400).json({ error: 'Text must be 1..1000 characters' })
       const focus = req.body.focus === true
       let focusRank = null
       if (req.body.focus_rank !== undefined && req.body.focus_rank !== null) {
@@ -69,7 +85,8 @@ module.exports = function (getDB) {
       const now = new Date()
       const doc = {
         day,
-        text: req.body.text,
+        text: req.body.text.trim(),
+        outcome: typeof req.body.outcome === 'string' ? req.body.outcome.trim().slice(0, 1000) : null,
         done: false,
         done_at: null,
         created_at: now,
@@ -111,13 +128,38 @@ module.exports = function (getDB) {
   })
 
   // PUT /api/life/day-goals/:id — {done?, text?}.
-  router.put('/day-goals/:id', async (req, res) => {
+  router.put('/day-goals/:id', validateBody('DayGoalUpdateRequest'), async (req, res) => {
     try {
       const id = toObjectId(req.params.id)
       if (!id) return res.status(404).json({ error: 'Not found' })
       const db = getDB()
       const set = {}
-      if (req.body.text !== undefined) set.text = req.body.text
+      const current = await db.collection('life_day_goals').findOne({ _id: id })
+      if (!current) return res.status(404).json({ error: 'Not found' })
+      if (req.body.text !== undefined) {
+        if (typeof req.body.text !== 'string' || !req.body.text.trim() || req.body.text.length > 1000) return res.status(400).json({ error: 'Text must be 1..1000 characters' })
+        set.text = req.body.text.trim()
+      }
+      if (req.body.outcome !== undefined) {
+        if (req.body.outcome !== null && typeof req.body.outcome !== 'string') return res.status(400).json({ error: 'Outcome must be text or null' })
+        set.outcome = req.body.outcome?.trim().slice(0, 1000) || null
+      }
+      if (req.body.focus !== undefined) {
+        if (typeof req.body.focus !== 'boolean') return res.status(400).json({ error: 'Focus must be boolean' })
+        set.focus = req.body.focus
+        if (set.focus && !current.focus) {
+          const existing = await db.collection('life_day_goals').find({ day: current.day, focus: true }).toArray()
+          if (existing.length >= MAX_FOCUS_PER_DAY) return res.status(400).json({ error: 'Max 3 focus goals per day' })
+          set.focus_rank = [1, 2, 3].find((rank) => !existing.some((g) => g.focus_rank === rank))
+          set.confirmed_at = new Date()
+          set.proposed_by = null
+        } else if (!set.focus) {
+          set.focus_rank = null
+          set.confirmed_at = null
+          set.proposed_by = null
+          set.proposed_at = null
+        }
+      }
       if (req.body.done !== undefined) {
         set.done = !!req.body.done
         set.done_at = set.done ? new Date() : null

@@ -147,7 +147,7 @@ describe('POST /api/life/habits', () => {
     expect(res.body.rules).toEqual([])
   })
 
-  it('identity/two_minute are forced to null for a break habit even if sent', async () => {
+  it('break habit hides identity but can keep a minimal alternative action', async () => {
     const { app } = makeApp()
     const res = await request(app)
       .post('/api/life/habits')
@@ -160,7 +160,7 @@ describe('POST /api/life/habits', () => {
       })
     expect(res.status).toBe(201)
     expect(res.body.identity).toBeNull()
-    expect(res.body.two_minute).toBeNull()
+    expect(res.body.two_minute).toBe('should be ignored')
   })
 })
 
@@ -535,7 +535,7 @@ describe('GET /api/life/today', () => {
     expect(res.body.habits[0].rules[0].check.done).toBe(true)
   })
 
-  it('days_clean follows the SPEC §5 table exactly for a break habit', async () => {
+  it('days_clean requires explicit confirmation; missing days remain unknown', async () => {
     const habitId = new ObjectId()
     const ruleId = new ObjectId()
     const { app } = makeApp({
@@ -558,14 +558,14 @@ describe('GET /api/life/today', () => {
       ],
     })
 
-    const expectDaysClean = async (day: string, expected: number) => {
+    const expectDaysClean = async (day: string, expected: number | null) => {
       const res = await request(app).get('/api/life/today').query({ day })
       expect(res.body.habits[0].days_clean).toBe(expected)
     }
 
-    await expectDaysClean('2026-09-27', 0) // creation day itself
+    await expectDaysClean('2026-09-27', null) // creation day itself
     await expectDaysClean('2026-09-28', 1)
-    await expectDaysClean('2026-09-29', 2)
+    await expectDaysClean('2026-09-29', null)
     await expectDaysClean('2026-09-30', 0)
     await expectDaysClean('2026-10-01', 1)
   })
@@ -586,7 +586,7 @@ describe('GET /api/life/today', () => {
       checks: [{ rule_id: archivedRule, habit_id: habitId, day: '2026-09-30', done: false }],
     })
     const res = await request(app).get('/api/life/today').query({ day: '2026-10-01' })
-    expect(res.body.habits[0].days_clean).toBe(1) // failure 09-30 counted -> only 10-01 clean
+    expect(res.body.habits[0].days_clean).toBeNull() // no confirmation on 10-01
   })
 
   it('days_clean is null for a build habit (only meaningful for break)', async () => {
@@ -643,5 +643,27 @@ describe('PUT /api/life/habits/:id — type change (#1712)', () => {
     const { app } = makeApp({ habits: [{ _id: habitId, type: 'build', name: 'x', active: true }] })
     const put = await request(app).put(`/api/life/habits/${habitId}`).send({ type: 'nope' })
     expect(put.status).toBe(400)
+  })
+})
+
+describe('daily-cycle status contract', () => {
+  it('round-trips purpose, schedule, skip reasons and minimal actions', async () => {
+    const { app } = makeApp()
+    const create = await request(app).post('/api/life/habits').send({ type: 'build', name: 'Практика', purpose: 'Розвивати навичку', frequency: { kind: 'weekdays', days: [1,3] }, rules: [{ text: 'Вправа' }] })
+    expect(create.status).toBe(201)
+    const id = create.body._id, rule = create.body.rules[0]._id
+    const monday = '2026-10-19', tuesday = '2026-10-20'
+    expect((await request(app).get('/api/life/today?day=' + tuesday)).body.habits[0]).toMatchObject({ status: 'not_scheduled', scheduled_today: false })
+    expect((await request(app).get('/api/life/today?day=' + monday)).body.habits[0]).toMatchObject({ status: 'unmarked', done_today: null, purpose: 'Розвивати навичку' })
+    await request(app).post(`/api/life/rules/${rule}/check`).send({ day: monday, done: false, source: 'dashboard', slip_reason: 'Втома' })
+    const skipped = (await request(app).get('/api/life/today?day=' + monday)).body.habits[0]
+    expect(skipped.status).toBe('skipped')
+    expect(skipped.rules[0].check.slip_reason).toBe('Втома')
+    await request(app).post(`/api/life/rules/${rule}/check`).send({ day: monday, done: false, two_minute_version: true, source: 'dashboard' })
+    const minimal = (await request(app).get('/api/life/today?day=' + monday)).body.habits[0]
+    expect(minimal.status).toBe('minimal')
+    expect(minimal.rules[0].check.slip_reason).toBeUndefined()
+    await request(app).put(`/api/life/habits/${id}`).send({ frequency: { kind: 'weekly_n', n: 1 } })
+    expect((await request(app).get('/api/life/today?day=' + tuesday)).body.habits[0]).toMatchObject({ status: 'quota_met', week_count: 1 })
   })
 })

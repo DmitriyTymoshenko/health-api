@@ -35,6 +35,29 @@ describe('day rating route', () => {
     assertMatchesContract('DayRatingResponse', res.body)
   })
 
+  it('editing one axis preserves the rest of an existing reflection and explicit null clears only that axis', async () => {
+    const { app } = makeApp()
+    await request(app).put('/api/life/day-rating').send({ day: DAY, energy: 4, mood: 3, went_well: 'Результат', change_tomorrow: 'Менше справ', source: 'dashboard' })
+    await request(app).put('/api/life/day-rating').send({ day: DAY, focus: 5, source: 'dashboard' })
+    const after = await request(app).get('/api/life/day-rating?day=' + DAY)
+    expect(after.body).toMatchObject({ energy: 4, mood: 3, focus: 5, went_well: 'Результат', change_tomorrow: 'Менше справ' })
+    await request(app).put('/api/life/day-rating').send({ day: DAY, mood: null })
+    expect((await request(app).get('/api/life/day-rating?day=' + DAY)).body).toMatchObject({ energy: 4, mood: null })
+  })
+
+  it('validates new request contracts and serializes concurrent partial ratings', async () => {
+    const { app, collections } = makeApp()
+    const results = await Promise.all([
+      request(app).put('/api/life/day-rating').send({ day: DAY, energy: 4 }),
+      request(app).put('/api/life/day-rating').send({ day: DAY, change_tomorrow: 'Відпочити' }),
+    ])
+    expect(results.map((r) => r.status)).toEqual([200,200])
+    expect(collections.life_day_ratings._docs()).toHaveLength(1)
+    expect((await request(app).get('/api/life/day-rating?day=' + DAY)).body).toMatchObject({ energy: 4, change_tomorrow: 'Відпочити' })
+    expect((await request(app).put('/api/life/day-rating').send({ day: DAY, change_tomorrow: {} })).status).toBe(400)
+    expect((await request(app).put('/api/life/day-rating').send({ day: DAY, invented: true })).status).toBe(400)
+  })
+
   it('rejects 0 and bad day format', async () => {
     const { app } = makeApp()
     expect((await request(app).put('/api/life/day-rating').send({ day: DAY, energy: 0 })).status).toBe(400)

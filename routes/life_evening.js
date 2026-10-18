@@ -1,7 +1,8 @@
 const { Router } = require('express')
-const { ObjectId } = require('mongodb')
+const { validateBody } = require('../lib/life-contracts')
 const { todayKyiv, toKyivDay, isValidKyivDayFormat, addDaysToKyivDay } = require('../lib/kyiv-day')
 const trackers = require('../lib/life-trackers')
+const { habitDoneToday } = require('../lib/life-rules')
 
 function ratingValue(value) {
   if (value === undefined) return { present: false, value: null }
@@ -33,9 +34,20 @@ function ruleOut(habit, rule) {
 
 module.exports = function (getDB) {
   const router = Router()
+  let ratingTail = Promise.resolve()
+  router.use(async (req, res, next) => {
+    if (req.method !== 'PUT' || req.path !== '/day-rating') return next()
+    const previous = ratingTail
+    let release
+    ratingTail = new Promise((resolve) => { release = resolve })
+    await previous
+    if (res.destroyed) { release(); return }
+    res.once('finish', release); res.once('close', release)
+    next()
+  })
 
   // PUT /api/life/day-rating — partial upsert. Missing axes stay null; never coerced to 0.
-  router.put('/day-rating', async (req, res) => {
+  router.put('/day-rating', validateBody('DayRatingRequest'), async (req, res) => {
     try {
       const day = req.body.day || todayKyiv()
       if (!isValidKyivDayFormat(day)) return res.status(400).json({ error: 'Invalid day format. Use YYYY-MM-DD' })
@@ -45,14 +57,18 @@ module.exports = function (getDB) {
         if (v.error) return res.status(400).json({ error: v.error })
         if (v.present) set[axis] = v.value
       }
-      for (const key of ['went_well', 'got_in_way']) {
-        if (req.body[key] !== undefined) set[key] = req.body[key] === null ? null : String(req.body[key]).slice(0, 2000)
+      for (const key of ['went_well', 'got_in_way', 'change_tomorrow']) {
+        if (req.body[key] !== undefined) {
+          if (req.body[key] !== null && (typeof req.body[key] !== 'string' || req.body[key].length > 2000)) return res.status(400).json({ error: 'Reflection fields must be text up to 2000 characters or null' })
+          set[key] = req.body[key]
+        }
       }
-      const defaults = { energy: null, focus: null, mood: null, went_well: null, got_in_way: null }
+      const defaults = { energy: null, focus: null, mood: null, went_well: null, got_in_way: null, change_tomorrow: null }
+      for (const key of Object.keys(set)) delete defaults[key]
       const db = getDB()
       const doc = await db.collection('life_day_ratings').findOneAndUpdate(
         { day },
-        { $set: { ...defaults, ...set } },
+        { $set: set, $setOnInsert: defaults },
         { upsert: true, returnDocument: 'after' }
       )
       res.json(doc)
@@ -66,7 +82,7 @@ module.exports = function (getDB) {
       const day = req.query.day || todayKyiv()
       if (!isValidKyivDayFormat(day)) return res.status(400).json({ error: 'Invalid day format. Use YYYY-MM-DD' })
       const doc = await getDB().collection('life_day_ratings').findOne({ day })
-      res.json(doc || { day, energy: null, focus: null, mood: null, went_well: null, got_in_way: null, source: null, rated_at: null })
+      res.json(doc || { day, energy: null, focus: null, mood: null, went_well: null, got_in_way: null, change_tomorrow: null, source: null, rated_at: null })
     } catch (err) {
       res.status(500).json({ error: err.message })
     }
@@ -97,7 +113,19 @@ module.exports = function (getDB) {
             : { done: null, two_minute_version: null },
         })),
       }))
-      const openRules = habitsOut.flatMap((h) => h.rules.filter((r) => isRuleOpen(h, r)).map((r) => ruleOut(h, r)))
+      const eligibleHabits = []
+      for (const h of habitsOut) {
+        const f = h.frequency || { kind: 'daily' }
+        if (f.kind === 'weekdays' && !f.days.includes(trackers.isoWeekday(day))) continue
+        if (f.kind === 'weekly_n') {
+          const weekChecks = await db.collection('life_rule_checks').find({ habit_id: h._id, day: { $gte: trackers.weekStart(day), $lte: day } }).toArray()
+          const days = [...new Set(weekChecks.map((c) => c.day))]
+          const count = days.filter((d) => h.rules.length && h.rules.every((r) => weekChecks.some((c) => c.day === d && String(c.rule_id) === String(r._id) && (c.done === true || c.two_minute_version === true)))).length
+          if (count >= f.n) continue
+        }
+        eligibleHabits.push(h)
+      }
+      const openRules = eligibleHabits.flatMap((h) => h.rules.filter((r) => isRuleOpen(h, r)).map((r) => ruleOut(h, r)))
       const openGoals = dayGoals.filter((g) => !g.done).map(goalOut)
       const risks = await dontMissTwiceRisks(db, habits, day)
       res.json({ day, open_rules: openRules, open_goals: openGoals, dont_miss_twice: risks, rating_present: !!rating })
@@ -126,7 +154,7 @@ async function dontMissTwiceRisks(db, habits, day) {
     const doneByDay = {}
     for (let d = createdDay; d <= day; d = addDaysToKyivDay(d, 1)) {
       const map = byDay[d] || {}
-      doneByDay[d] = rules.length > 0 && rules.every((r) => map[String(r._id)]?.done === true || map[String(r._id)]?.two_minute_version === true)
+      doneByDay[d] = habitDoneToday(rules, map)
     }
     const evald = trackers.evaluatePeriods(frequency, createdDay, day, doneByDay)
     if (trackers.dontMissTwice(evald.past, evald.current) === 'at_risk') {

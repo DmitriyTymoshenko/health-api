@@ -97,11 +97,13 @@ export function makeMockCollection(initial: Doc[] = []) {
     },
     async findOneAndUpdate(filter: Doc, update: Doc, opts: Doc = {}) {
       let doc = docs.find((d) => matches(d, filter))
+      const inserting = !doc
       if (!doc) {
         if (!opts.upsert) return null
         doc = { _id: new ObjectId() }
         docs.push(doc)
       }
+      if (inserting && update.$setOnInsert) Object.assign(doc, update.$setOnInsert)
       if (update.$set) Object.assign(doc, update.$set)
       return doc
     },
