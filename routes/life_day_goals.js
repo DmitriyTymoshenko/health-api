@@ -69,6 +69,27 @@ module.exports = function (getDB) {
         return res.status(400).json({ error: 'proposed_by must be "lisa" or null' })
       }
       const db = getDB()
+      let project = null, inbox = null
+      if (req.body.project_id) {
+        const id = toObjectId(req.body.project_id)
+        project = id && await db.collection('life_plans').findOne({ _id: id })
+        if (!project || project.status !== 'active') return res.status(400).json({ error: 'Оберіть активну ціль, проєкт або навичку' })
+      }
+      if (req.body.inbox_id) {
+        const id = toObjectId(req.body.inbox_id)
+        inbox = id && await db.collection('life_inbox').findOne({ _id: id })
+        if (!inbox) return res.status(400).json({ error: 'Запис не знайдено' })
+        const existing = await db.collection('life_day_goals').findOne({ inbox_id: String(id) })
+        if (existing) {
+          await db.collection('life_inbox').findOneAndUpdate({ _id: id }, { $set: { status: 'planned', day_goal_id: String(existing._id) } })
+          return res.status(201).json(existing)
+        }
+        if (inbox.status !== 'inbox') return res.status(400).json({ error: 'Запис уже опрацьовано' })
+      }
+      if (project) {
+        const existing = await db.collection('life_day_goals').findOne({ project_id: String(project._id), day, text: req.body.text.trim(), done: false })
+        if (existing) return res.status(201).json(existing)
+      }
       const proposedByLisa = req.body.proposed_by === 'lisa'
       if (focus) {
         const existing = await db.collection('life_day_goals').find({ day, focus: true }).toArray()
@@ -98,8 +119,13 @@ module.exports = function (getDB) {
         // Dashboard-created focus is confirmed by the act of creating it; a Lisa proposal waits for the tap.
         confirmed_at: focus && !proposedByLisa ? now : null,
         goal_id: null,
+        project_id: project ? String(project._id) : null,
+        project_title: project?.title || null,
+        inbox_id: inbox ? String(inbox._id) : null,
+        estimate_minutes: req.body.estimate_minutes ?? null,
       }
       const result = await db.collection('life_day_goals').insertOne(doc)
+      if (inbox) await db.collection('life_inbox').findOneAndUpdate({ _id: inbox._id }, { $set: { status: 'planned', day_goal_id: String(result.insertedId) } })
       res.status(201).json({ ...doc, _id: result.insertedId })
     } catch (err) {
       res.status(500).json({ error: err.message })
@@ -160,9 +186,10 @@ module.exports = function (getDB) {
           set.proposed_at = null
         }
       }
+      if (req.body.estimate_minutes !== undefined) set.estimate_minutes = req.body.estimate_minutes
       if (req.body.done !== undefined) {
         set.done = !!req.body.done
-        set.done_at = set.done ? new Date() : null
+        set.done_at = set.done ? (current.done_at || new Date()) : null
       }
       const result = await db.collection('life_day_goals').findOneAndUpdate(
         { _id: id },

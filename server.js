@@ -78,6 +78,11 @@ async function connectDB() {
   await db.collection('life_rule_checks').createIndex({ habit_id: 1, day: 1 })
   await db.collection('life_nudges').createIndex({ habit_id: 1, key: 1 }, { unique: true }) // #1602
   await db.collection('life_day_goals').createIndex({ day: 1 })
+  await db.collection('life_day_plans').createIndex({ day: 1 }, { unique: true })
+  await db.collection('life_weekly_reviews').createIndex({ start: 1 }, { unique: true })
+  await db.collection('life_personal_preferences').createIndex({ key: 1 }, { unique: true })
+  await db.collection('life_plans').createIndex({ status: 1, priority: 1 })
+  await db.collection('life_inbox').createIndex({ status: 1, created_at: -1 })
   await db.collection('life_calendar_snapshots').createIndex({ day: 1 }, { unique: true }) // #1601
 
   console.log('Indexes created')
@@ -349,6 +354,7 @@ app.use('/api/life', require('./routes/life_day_goals')(getDB))
 app.use('/api/life', require('./routes/life_calendar')(getDB)) // #1601
 app.use('/api/life', require('./routes/life_evening')(getDB)) // #1603
 app.use('/api/life', require('./routes/life_profile')(getDB))
+app.use('/api/life', require('./routes/life_planning')(getDB))
 
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }))
