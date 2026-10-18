@@ -50,23 +50,25 @@ async function attachActiveRules(db, habits) {
 // (they own no life_rule_checks); rule-based habits from life_rule_checks.
 async function loadDoneByDay(db, habit, fromDay, toDay) {
   const doneByDay = {}
+  const fullByDay = {}
   if (habit.tracker) {
     const coll = trackers.SOURCE_COLLECTION[habit.tracker.source]
     const docs = await db.collection(coll).find({ date: { $gte: fromDay, $lte: toDay } }).toArray()
     const states = trackers.trackerStatesByDay(habit.tracker, docs)
-    for (const [day, st] of states) doneByDay[day] = st.met
-    return { doneByDay, states }
+    for (const [day, st] of states) { doneByDay[day] = st.met; fullByDay[day] = st.met }
+    return { doneByDay, fullByDay, states }
   }
   const rules = await db.collection('life_habit_rules').find({ habit_id: habit._id, active: true }).toArray()
-  if (!rules.length) return { doneByDay }
+  if (!rules.length) return { doneByDay, fullByDay }
   const checks = await db.collection('life_rule_checks').find({ habit_id: habit._id, day: { $gte: fromDay, $lte: toDay } }).toArray()
   const byDay = {}
   for (const c of checks) (byDay[c.day] = byDay[c.day] || {})[String(c.rule_id)] = c
   for (const [day, map] of Object.entries(byDay)) {
     const archivedFailure = habit.type === 'break' && Object.values(map).some((check) => check.done === false && check.two_minute_version !== true)
     doneByDay[day] = archivedFailure ? false : habitDoneToday(rules, map)
+    fullByDay[day] = doneByDay[day] === true && rules.every((r) => map[String(r._id)]?.done === true && map[String(r._id)]?.two_minute_version !== true)
   }
-  return { doneByDay }
+  return { doneByDay, fullByDay }
 }
 
 function hhmmKyiv(date) {
@@ -156,6 +158,7 @@ module.exports = function (getDB, sources) {
         name: req.body.name,
         sphere: req.body.sphere ?? null,
         identity: req.body.type === 'build' ? req.body.identity ?? null : null,
+        design: req.body.design ?? null,
         purpose: typeof req.body.purpose === 'string' ? req.body.purpose.trim().slice(0, 1000) : null,
         implementation: req.body.implementation ?? null,
         two_minute: req.body.two_minute ?? null,
@@ -204,7 +207,7 @@ module.exports = function (getDB, sources) {
   })
 
   // PUT /api/life/habits/:id — partial update of the editable fields.
-  const HABIT_EDITABLE_FIELDS = ['type', 'name', 'sphere', 'identity', 'implementation', 'two_minute', 'purpose']
+  const HABIT_EDITABLE_FIELDS = ['type', 'name', 'sphere', 'identity', 'implementation', 'two_minute', 'purpose', 'design']
   router.put('/habits/:id', validateBody('HabitUpdateRequest'), async (req, res) => {
     try {
       const id = toObjectId(req.params.id)
@@ -505,11 +508,11 @@ module.exports = function (getDB, sources) {
       for (const habit of habits) {
         const frequency = habit.frequency && habit.frequency.kind ? habit.frequency : { kind: 'daily' }
         const wk = frequency.kind === 'weekly_n' ? trackers.weekStart(day) : day
-        const { doneByDay } = await loadDoneByDay(db, habit, wk, day)
+        const { doneByDay, fullByDay } = await loadDoneByDay(db, habit, wk, day)
         let doneToday = !!doneByDay[day]
         let scheduledToday = frequency.kind !== 'weekdays' || frequency.days.includes(now.weekday)
         if (frequency.kind === 'weekly_n') {
-          const cnt = Object.values(doneByDay).filter(Boolean).length
+          const cnt = Object.values(fullByDay).filter(Boolean).length
           doneToday = cnt >= frequency.n // week target reached — no more nudges this week
         }
         const latestDates = {}
@@ -601,10 +604,11 @@ module.exports = function (getDB, sources) {
         const frequency = habit.frequency || { kind: 'daily' }
         const createdDay = toKyivDay(habit.created_at)
         const fromDay = createdDay > trackers.weekStart(day) ? trackers.weekStart(day) : createdDay
-        const { doneByDay } = await loadDoneByDay(db, habit, fromDay, day)
+        const { doneByDay, fullByDay } = await loadDoneByDay(db, habit, fromDay, day)
         const weekCount = Object.entries(doneByDay).filter(([d, done]) => d >= trackers.weekStart(day) && done === true).length
+        const weekFullCount = Object.entries(fullByDay).filter(([d, done]) => d >= trackers.weekStart(day) && done === true).length
         const scheduled = frequency.kind !== 'weekdays' || frequency.days.includes(trackers.isoWeekday(day))
-        const quotaMet = frequency.kind === 'weekly_n' && weekCount >= frequency.n
+        const quotaMet = frequency.kind === 'weekly_n' && weekFullCount >= frequency.n
         const habitRules = rulesByHabit[String(habit._id)] || []
         const rulesOut = habitRules.map((rule) => ({ ...rule, check: ruleCheckState(checksByRuleId[String(rule._id)]) }))
         const st = habit.tracker ? trackerStateByHabit[String(habit._id)] : null
@@ -614,7 +618,8 @@ module.exports = function (getDB, sources) {
           : quotaMet ? 'quota_met' : doneToday === false ? 'skipped' : 'unmarked'
         return { ...habit, rules: habit.tracker ? [] : rulesOut, done_today: doneToday,
           days_clean: habit.type === 'break' ? trackers.confirmedCleanDays(frequency, createdDay, day, doneByDay) : null,
-          scheduled_today: scheduled, week_count: weekCount, status,
+          scheduled_today: scheduled, week_count: weekCount, week_full_count: weekFullCount, status,
+          return_plan: trackers.returnPlan({ habit, day, doneByDay, scheduled, quotaMet, doneToday }),
           ...(habit.tracker ? { tracker_state: { value: st ? st.value : null, threshold: habit.tracker.threshold, met: st ? st.met : null } } : {}),
         }
       }))

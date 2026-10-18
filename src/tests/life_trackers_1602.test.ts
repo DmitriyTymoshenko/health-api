@@ -342,3 +342,14 @@ describe('unknown is neither success nor failure', () => {
     expect(T.confirmedCleanDays({ kind: 'weekdays', days: [1,3] }, '2026-10-05', '2026-10-07', { '2026-10-05': true, '2026-10-07': true })).toBe(2)
   })
 })
+
+describe('a practical return plan based on explicit evidence',()=>{
+  const habit={type:'build',created_at:new Date('2026-10-01T09:00:00Z'),frequency:{kind:'weekdays',days:[1,3,5]},two_minute:'Прочитати сторінку',design:{restart:'Відкрити книгу після кави'}}
+  it('uses the previous scheduled opportunity, skips rest days, and preserves unknown',()=>{
+    const args={habit,day:'2026-10-07',scheduled:true,quotaMet:false,doneToday:null}
+    expect(T.returnPlan({...args,doneByDay:{'2026-10-05':false}})).toEqual({last_skip_day:'2026-10-05',action:'Відкрити книгу після кави'})
+    expect(T.returnPlan({...args,doneByDay:{}})).toBeNull()
+    expect(T.returnPlan({...args,doneByDay:{'2026-10-05':false},scheduled:false})).toBeNull()
+    expect(T.returnPlan({...args,doneByDay:{'2026-10-05':false},doneToday:true})).toBeNull()
+  })
+})

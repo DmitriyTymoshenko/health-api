@@ -664,6 +664,20 @@ describe('daily-cycle status contract', () => {
     expect(minimal.status).toBe('minimal')
     expect(minimal.rules[0].check.slip_reason).toBeUndefined()
     await request(app).put(`/api/life/habits/${id}`).send({ frequency: { kind: 'weekly_n', n: 1 } })
-    expect((await request(app).get('/api/life/today?day=' + tuesday)).body.habits[0]).toMatchObject({ status: 'quota_met', week_count: 1 })
+    expect((await request(app).get('/api/life/today?day=' + tuesday)).body.habits[0]).toMatchObject({ status: 'unmarked', week_count: 1, week_full_count: 0 })
+    await request(app).post(`/api/life/rules/${rule}/check`).send({ day: monday, done: true, source: 'dashboard' })
+    expect((await request(app).get('/api/life/today?day=' + tuesday)).body.habits[0]).toMatchObject({ status: 'quota_met', week_full_count: 1 })
+  })
+})
+
+describe('optional habit design fields',()=>{
+  it('persists and edits a plan without discarding it on an old-client update',async()=>{
+    const {app}=makeApp()
+    const design={environment:'Книга на столі',reward:'Записати корисну думку',restart:'Одна сторінка після кави'}
+    const made=await request(app).post('/api/life/habits').send({name:'Читання',type:'build',design,rules:[{text:'Розділ'}]})
+    expect(made.status).toBe(201)
+    await request(app).put('/api/life/habits/'+made.body._id).send({name:'Читати'})
+    expect((await request(app).get('/api/life/habits/'+made.body._id)).body.design).toEqual(design)
+    expect((await request(app).put('/api/life/habits/'+made.body._id).send({design:{invented:'x'}})).status).toBe(400)
   })
 })

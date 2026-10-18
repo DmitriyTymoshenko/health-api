@@ -120,7 +120,7 @@ module.exports = function (getDB) {
         if (f.kind === 'weekly_n') {
           const weekChecks = await db.collection('life_rule_checks').find({ habit_id: h._id, day: { $gte: trackers.weekStart(day), $lte: day } }).toArray()
           const days = [...new Set(weekChecks.map((c) => c.day))]
-          const count = days.filter((d) => h.rules.length && h.rules.every((r) => weekChecks.some((c) => c.day === d && String(c.rule_id) === String(r._id) && (c.done === true || c.two_minute_version === true)))).length
+          const count = days.filter((d) => h.rules.length && h.rules.every((r) => weekChecks.some((c) => c.day === d && String(c.rule_id) === String(r._id) && (c.done === true && c.two_minute_version !== true)))).length
           if (count >= f.n) continue
         }
         eligibleHabits.push(h)
