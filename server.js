@@ -83,6 +83,10 @@ async function connectDB() {
   await db.collection('life_personal_preferences').createIndex({ key: 1 }, { unique: true })
   await db.collection('life_plans').createIndex({ status: 1, priority: 1 })
   await db.collection('life_inbox').createIndex({ status: 1, created_at: -1 })
+  await db.collection('life_wins').createIndex({ day: -1 }) // #1605
+  await db.collection('life_wins').createIndex({ auto_key: 1 }, { unique: true, partialFilterExpression: { auto_key: { $type: 'string' } } }) // #1605 idempotent auto wins
+  await db.collection('life_ideas').createIndex({ knowledge_ref: 1 }, { unique: true }) // #1605 one idea per knowledge unit
+  await db.collection('life_ideas').createIndex({ status: 1, created_at: -1 })
   await db.collection('life_calendar_snapshots').createIndex({ day: 1 }, { unique: true }) // #1601
 
   console.log('Indexes created')
@@ -355,6 +359,7 @@ app.use('/api/life', require('./routes/life_calendar')(getDB)) // #1601
 app.use('/api/life', require('./routes/life_evening')(getDB)) // #1603
 app.use('/api/life', require('./routes/life_profile')(getDB))
 app.use('/api/life', require('./routes/life_planning')(getDB))
+app.use('/api/life', require('./routes/life_wins_ideas')(getDB)) // #1605
 
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }))

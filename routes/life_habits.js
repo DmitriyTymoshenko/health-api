@@ -664,3 +664,6 @@ module.exports = function (getDB, sources) {
 
   return router
 }
+
+// #1605: reused by routes/life_wins_ideas.js (streak milestones for auto wins).
+module.exports.loadDoneByDay = loadDoneByDay
