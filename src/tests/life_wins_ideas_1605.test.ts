@@ -68,6 +68,33 @@ describe('wins journal (#1605)', () => {
   })
 })
 
+describe('POST /ideas write boundary (#1605 fix-cycle: trusted-path only)', () => {
+  const FABRICATED = { knowledge_ref: 'totally-fabricated:999999999', source_title: 'Invented source', source_date: '2026-10-01',
+    source_url: 'https://example.com/invented', quote: 'This is a fabricated quotation that appears in no verified source.', proposal: 'Read every day', area: 'learning' }
+  it('rejects a POST that arrived through the public proxy (X-Forwarded-For / Forwarded / X-Forwarded-Host) — 403 and 0 inserts', async () => {
+    const { app, db } = setup()
+    for (const h of [{ 'X-Forwarded-For': '1.2.3.4' }, { Forwarded: 'for=1.2.3.4' }, { 'X-Forwarded-Host': 'srv1532186.hstgr.cloud' }, { 'X-Real-IP': '1.2.3.4' }]) {
+      for (const body of [FABRICATED, IDEA]) {
+        const r = await request(app).post('/api/life/ideas').set(h).send(body)
+        expect(r.status).toBe(403)
+      }
+    }
+    expect((await db.collection('life_ideas').find({}).toArray()).length).toBe(0)
+    expect((await request(app).get('/api/life/ideas')).body.ideas).toHaveLength(0)
+  })
+  it('the trusted direct path (no proxy headers, i.e. the MCP idea_propose on loopback) still stores a sourced idea', async () => {
+    const { app } = setup()
+    expect((await request(app).post('/api/life/ideas').send(IDEA)).status).toBe(201)
+  })
+  it('the proxy guard covers only POST /ideas — reads and decisions stay reachable from the UI', async () => {
+    const { app } = setup(); const idea = (await request(app).post('/api/life/ideas').send(IDEA)).body
+    const h = { 'X-Forwarded-For': '1.2.3.4' }
+    expect((await request(app).get('/api/life/ideas').set(h)).status).toBe(200)
+    expect((await request(app).put('/api/life/ideas/' + idea._id).set(h).send({ status: 'dismissed' })).status).toBe(200)
+    expect((await request(app).post('/api/life/wins').set(h).send({ text: 'Win via UI' })).status).toBe(201)
+  })
+})
+
 describe('personal ideas from sources (#1605, anti-fabrication)', () => {
   it('stores a fully-sourced idea, is idempotent per knowledge_ref and matches the contract', async () => {
     const { app } = setup()

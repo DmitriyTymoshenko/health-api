@@ -110,7 +110,18 @@ module.exports = function (getDB) {
     res.json({ ideas })
   }))
 
-  router.post('/ideas', validateBody('IdeaCreateRequest'), safe(async (req, res, db) => {
+  // WRITE BOUNDARY (#1605 fix-cycle). health-api has no access to `knowledge_items` (Postgres), so it
+  // cannot verify a quote/provenance itself. Chosen design = TRUSTED WRITE PATH ONLY: the sole writer is
+  // the MCP `idea_propose`, which loads the item from the DB, checks the quote is verbatim and copies
+  // title/date/URL from the row. :3001 listens on 127.0.0.1 only; the only public ingress is Caddy
+  // (`/me/api-life/*`, reverse_proxy), which ALWAYS stamps X-Forwarded-* on the upstream request and a
+  // client cannot strip them. Any request carrying proxy headers is therefore the public/UI path → 403.
+  const PROXY_HEADERS = ['x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'forwarded', 'x-real-ip']
+  const trustedWriteOnly = (req, res, next) => PROXY_HEADERS.some(h => req.headers[h] !== undefined)
+    ? fail(res, 'Ідеї створюються лише довіреним шляхом (MCP idea_propose з перевіркою джерела й дослівної цитати)', 403)
+    : next()
+
+  router.post('/ideas', trustedWriteOnly, validateBody('IdeaCreateRequest'), safe(async (req, res, db) => {
     const b = req.body, trim = k => b[k].trim()
     if (!validDay(b.source_date) || b.source_date > todayKyiv()) return fail(res, 'Некоректна дата джерела')
     if (trim('quote').length < MIN_QUOTE_CHARS) return fail(res, `Цитата має бути дослівною і містити щонайменше ${MIN_QUOTE_CHARS} символів`)
